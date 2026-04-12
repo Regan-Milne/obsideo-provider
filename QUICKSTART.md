@@ -32,7 +32,7 @@ Create a **reusable** auth key. Copy it.
 ## 3. Configure
 
 ```bash
-git clone https://github.com/obsideo/obsideo-provider.git
+git clone https://github.com/Regan-Milne/obsideo-provider.git
 cd obsideo-provider
 cp .env.example .env
 ```

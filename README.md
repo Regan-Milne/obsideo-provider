@@ -1,8 +1,12 @@
 # Obsideo Provider
 
 A storage provider for the Obsideo decentralized storage network. Run this
-on your hardware to store encrypted data for the network and earn AKT
-rewards.
+on your hardware to store encrypted data for the network.
+
+## Start here
+
+- **I want to run a provider** -- [QUICKSTART.md](QUICKSTART.md)
+- **I want to inspect what this does first** -- [TRANSPARENCY.md](TRANSPARENCY.md)
 
 ## What this is
 
@@ -11,14 +15,14 @@ Obsideo Provider is a single Go binary that:
 - Receives encrypted file chunks from the network
 - Stores them on your disk
 - Proves it still has them when audited (proof-of-retrievability)
-- Earns AKT rewards proportional to storage contributed and uptime
+- Accrues AKT rewards based on storage contributed and uptime (payment system is live but early; settlement is currently manual)
 
 Providers never see plaintext data. All files are encrypted client-side
 before upload. You store ciphertext.
 
 ## Why run a provider
 
-- **Earn AKT** for contributing storage capacity
+- **Contribute storage** to the network and accrue AKT rewards (early-stage; payouts are being rolled out)
 - **No minimum hardware** beyond disk space and a network connection
 - **Runs anywhere**: Docker, bare metal, LXC, cloud (Akash)
 - **Lightweight**: ~16 MB binary, ~42 MB RAM at runtime
@@ -26,7 +30,7 @@ before upload. You store ciphertext.
 ## Quick start (Docker)
 
 ```bash
-git clone https://github.com/obsideo/obsideo-provider.git
+git clone https://github.com/Regan-Milne/obsideo-provider.git
 cd obsideo-provider
 cp .env.example .env
 # Edit .env: set TS_AUTHKEY (get one at https://login.tailscale.com/admin/settings/keys)
@@ -110,7 +114,7 @@ sha256sum datafarmer
 3. **Approval** -- a network admin approves your provider (status: pending -> active)
 4. **Receive data** -- encrypted uploads start flowing to your node
 5. **Prove storage** -- the coordinator periodically challenges your provider to prove it holds data
-6. **Earn rewards** -- AKT accrues based on bytes stored and your proof-of-retrievability score
+6. **Accrue rewards** -- AKT accrues based on bytes stored and your proof score (payment system is live; settlement is being rolled out)
 
 ## Configuration
 
@@ -134,7 +138,7 @@ What works today:
 - Encrypted uploads and downloads
 - Proof-of-retrievability (automated challenge cycles)
 - Multi-provider replication (configurable factor, default 3)
-- AKT payment accrual and withdrawal
+- AKT payment accrual (withdrawal and settlement being rolled out)
 - Docker, native Linux, LXC, and Akash deployment
 
 What is coming:
