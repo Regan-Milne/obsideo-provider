@@ -1,0 +1,28 @@
+# Build artifacts
+datafarmer
+*.exe
+
+# Runtime state
+data/
+*.key
+coordinator_pub.pem
+
+# Local config (use .env.example as template)
+.env
+config.yaml
+obsideo.config.json
+.obsideo-state.json
+
+# Deploy files with secrets
+deploy/akash/deploy.yaml
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.test
+*.out

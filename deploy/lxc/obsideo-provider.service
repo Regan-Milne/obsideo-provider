@@ -1,0 +1,34 @@
+[Unit]
+Description=Obsideo Storage Provider
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=obsideo
+Group=obsideo
+
+EnvironmentFile=/etc/obsideo-provider/provider.env
+WorkingDirectory=/opt/obsideo-provider
+
+# Bootstrap runs as root (+) because it needs tailscale CLI access
+# and writes config/identity files. It chowns data back to obsideo.
+ExecStartPre=+/opt/obsideo-provider/bootstrap.sh
+ExecStart=/opt/obsideo-provider/datafarmer start --config /opt/obsideo-provider/config.yaml
+
+Restart=on-failure
+RestartSec=10
+
+# Timeouts -- provider handles multi-GB uploads, allow long shutdown
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=obsideo-provider
+
+# Hardening
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
