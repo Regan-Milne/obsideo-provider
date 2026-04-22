@@ -17,6 +17,7 @@ import (
 	"golang.org/x/crypto/sha3"
 
 	"github.com/gorilla/mux"
+	"github.com/Regan-Milne/obsideo-provider/file_system"
 	"github.com/rs/zerolog/log"
 )
 
@@ -124,31 +125,66 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRawChallenge handles V1 raw-chunk audit challenges.
+// handleRawChallenge handles V1 raw-chunk audit challenges. Streaming
+// implementation: reads chunks sequentially from disk, hashes each leaf into
+// a small accumulator, keeps only the challenged chunk's bytes for the
+// response. Peak memory is O(chunk_size + N*64 bytes), not O(file_size).
 func (s *Server) handleRawChallenge(w http.ResponseWriter, ch auditChallenge, merkleBytes []byte) {
-	// Read the challenged chunk
-	chunkData, totalChunks, err := s.fs.GetChunkByMerkle(merkleBytes, ch.ChunkIndex)
+	rsc, err := s.fs.GetFileData(merkleBytes)
 	if err != nil {
-		log.Error().Err(err).Str("merkle", ch.MerkleRoot).Int("chunk", ch.ChunkIndex).Msg("challenge: chunk lookup failed")
+		log.Error().Err(err).Str("merkle", ch.MerkleRoot).Msg("challenge: failed to open object")
 		writeErr(w, http.StatusNotFound, "object or chunk not found")
 		return
 	}
+	defer rsc.Close()
 
-	// Read all chunks to compute merkle proof
-	allChunks, err := s.fs.GetAllChunks(merkleBytes)
+	fileSize, err := rsc.Seek(0, io.SeekEnd)
 	if err != nil {
-		log.Error().Err(err).Str("merkle", ch.MerkleRoot).Msg("challenge: failed to read all chunks")
-		writeErr(w, http.StatusInternalServerError, "failed to build merkle proof")
+		writeErr(w, http.StatusInternalServerError, "file seek failed")
+		return
+	}
+	if _, err := rsc.Seek(0, io.SeekStart); err != nil {
+		writeErr(w, http.StatusInternalServerError, "file seek failed")
 		return
 	}
 
-	// Build merkle tree leaves matching SDK formula:
-	//   chunk_hash = SHA-256(fmt.Sprintf("%d%x", i, chunk))
-	//   tree_leaf  = SHA3-512(chunk_hash)   (wealdtech pre-hash)
-	leaves := make([][]byte, len(allChunks))
-	for i, cd := range allChunks {
-		chunkHash := chunkHashV1(i, cd)
-		leaves[i] = sha3Sum512(chunkHash) // wealdtech pre-hash
+	chunkSize := int64(file_system.DefaultChunkSize)
+	totalChunks := int((fileSize + chunkSize - 1) / chunkSize)
+	if totalChunks == 0 {
+		writeErr(w, http.StatusBadRequest, "object is empty")
+		return
+	}
+	if ch.ChunkIndex < 0 || ch.ChunkIndex >= totalChunks {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("chunk_index %d out of range [0, %d)", ch.ChunkIndex, totalChunks))
+		return
+	}
+
+	leaves := make([][]byte, totalChunks)
+	var challengedChunkData []byte
+	readBuf := make([]byte, chunkSize)
+
+	for i := 0; i < totalChunks; i++ {
+		n, rerr := io.ReadFull(rsc, readBuf)
+		if rerr == io.EOF && n == 0 {
+			writeErr(w, http.StatusInternalServerError, "file read truncated")
+			return
+		}
+		if rerr != nil && rerr != io.ErrUnexpectedEOF {
+			writeErr(w, http.StatusInternalServerError, "file read failed")
+			return
+		}
+		chunk := readBuf[:n]
+
+		if i == ch.ChunkIndex {
+			// Keep a copy; readBuf is reused on the next iteration.
+			challengedChunkData = make([]byte, n)
+			copy(challengedChunkData, chunk)
+		}
+
+		// SDK leaf formula: chunk_hash = SHA-256(fmt.Sprintf("%d%x", i, chunk))
+		// then SHA3-512 pre-hash to produce the wealdtech-compatible tree leaf.
+		chunkHash := chunkHashV1(i, chunk)
+		leaves[i] = sha3Sum512(chunkHash)
 	}
 
 	siblings := computeMerkleProof(leaves, ch.ChunkIndex)
@@ -159,7 +195,7 @@ func (s *Server) handleRawChallenge(w http.ResponseWriter, ch auditChallenge, me
 		ProviderID:      s.cfg.ProviderID,
 		MerkleRoot:      ch.MerkleRoot,
 		ChunkIndex:      ch.ChunkIndex,
-		ChunkData:       base64.StdEncoding.EncodeToString(chunkData),
+		ChunkData:       base64.StdEncoding.EncodeToString(challengedChunkData),
 		MerkleProof:     merkleProof{Siblings: siblings, Index: ch.ChunkIndex},
 		TotalChunkCount: totalChunks,
 		Nonce:           ch.Nonce,
@@ -167,31 +203,60 @@ func (s *Server) handleRawChallenge(w http.ResponseWriter, ch auditChallenge, me
 		ProofVersion:    proofVersionV1,
 	}
 
-	log.Info().Str("merkle", ch.MerkleRoot[:16]).Int("chunk", ch.ChunkIndex).Int("total", totalChunks).Msg("challenge passed (raw)")
+	log.Info().Str("merkle", ch.MerkleRoot[:16]).Int("chunk", ch.ChunkIndex).Int("total", totalChunks).Msg("challenge passed (raw, streaming)")
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleReplicaChallenge handles provider-bound replica audit challenges.
-// The provider reads raw bytes from storage, applies the deterministic
-// provider-bound transform, and returns the replica bytes with a merkle
-// proof computed over the replica leaves.
+// The provider reads raw bytes from storage one chunk at a time, applies the
+// deterministic provider-bound transform chunk-by-chunk, and returns the
+// challenged replica chunk plus a merkle proof computed over the replica
+// leaves. Peak memory during a challenge is O(chunk_size + N*64 bytes), not
+// O(file_size), so resource-constrained providers can audit large objects
+// without OOMing or exceeding the coordinator's HTTP timeout.
+//
+// Crypto properties are unchanged from the prior all-chunks-in-memory
+// implementation: same replica key derivation, same AES-256-CTR transform
+// with IV=le64(i), same SHA3-512 leaf hashing (pre-hashed once,
+// wealdtech-compatible), same merkle proof construction, same wire format
+// and proof version. A coordinator verifier cannot tell this response from
+// one produced by the prior handler given the same inputs.
 func (s *Server) handleReplicaChallenge(w http.ResponseWriter, ch auditChallenge, merkleBytes []byte) {
-	// Read all raw chunks from storage
-	allRawChunks, err := s.fs.GetAllChunks(merkleBytes)
+	// Open the object as a seekable file; we read chunks sequentially and
+	// never hold more than one chunk's raw bytes in memory at once.
+	rsc, err := s.fs.GetFileData(merkleBytes)
 	if err != nil {
-		log.Error().Err(err).Str("merkle", ch.MerkleRoot).Msg("replica challenge: failed to read chunks")
+		log.Error().Err(err).Str("merkle", ch.MerkleRoot).Msg("replica challenge: failed to open object")
 		writeErr(w, http.StatusNotFound, "object or chunk not found")
 		return
 	}
+	defer rsc.Close()
 
-	if ch.ChunkIndex < 0 || ch.ChunkIndex >= len(allRawChunks) {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("chunk_index %d out of range", ch.ChunkIndex))
+	fileSize, err := rsc.Seek(0, io.SeekEnd)
+	if err != nil {
+		log.Error().Err(err).Msg("replica challenge: seek-end failed")
+		writeErr(w, http.StatusInternalServerError, "file seek failed")
+		return
+	}
+	if _, err := rsc.Seek(0, io.SeekStart); err != nil {
+		log.Error().Err(err).Msg("replica challenge: seek-start failed")
+		writeErr(w, http.StatusInternalServerError, "file seek failed")
 		return
 	}
 
-	// Derive replica key using canonical derivation
-	// Must match coordinator/proof/replica.go exactly.
-	replicaVersion := 1 // v1.5 canonical version
+	chunkSize := int64(file_system.DefaultChunkSize)
+	totalChunks := int((fileSize + chunkSize - 1) / chunkSize)
+	if totalChunks == 0 {
+		writeErr(w, http.StatusBadRequest, "object is empty")
+		return
+	}
+	if ch.ChunkIndex < 0 || ch.ChunkIndex >= totalChunks {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("chunk_index %d out of range [0, %d)", ch.ChunkIndex, totalChunks))
+		return
+	}
+
+	// Derive replica key. Must match coordinator/proof/replica.go exactly.
+	replicaVersion := 1
 	key, err := deriveReplicaKey(s.cfg.ProviderID, ch.MerkleRoot, replicaVersion)
 	if err != nil {
 		log.Error().Err(err).Msg("replica challenge: key derivation failed")
@@ -199,11 +264,30 @@ func (s *Server) handleReplicaChallenge(w http.ResponseWriter, ch auditChallenge
 		return
 	}
 
-	// Transform all chunks and build replica merkle tree
-	replicaLeaves := make([][]byte, len(allRawChunks))
+	replicaLeaves := make([][]byte, totalChunks)
 	var challengedReplicaChunk []byte
+	readBuf := make([]byte, chunkSize) // reusable input buffer
 
-	for i, rawChunk := range allRawChunks {
+	for i := 0; i < totalChunks; i++ {
+		// io.ReadFull handles short reads. The last chunk is expected to be
+		// smaller than chunkSize in general; io.ErrUnexpectedEOF at that point
+		// is not a real error — the partial-buffer slice captures the tail.
+		n, rerr := io.ReadFull(rsc, readBuf)
+		if rerr == io.EOF && n == 0 {
+			log.Error().Int("chunk", i).Int("total", totalChunks).Msg("replica challenge: unexpected EOF before last chunk")
+			writeErr(w, http.StatusInternalServerError, "file read truncated")
+			return
+		}
+		if rerr != nil && rerr != io.ErrUnexpectedEOF {
+			log.Error().Err(rerr).Int("chunk", i).Msg("replica challenge: read failed")
+			writeErr(w, http.StatusInternalServerError, "file read failed")
+			return
+		}
+		rawChunk := readBuf[:n]
+
+		// encodeReplicaChunk allocates a fresh output slice (AES-CTR over the
+		// input), so the chunk's bytes are independent of readBuf and safe to
+		// reference past the next iteration's overwrite of readBuf.
 		replicaChunk, err := encodeReplicaChunk(key, i, rawChunk)
 		if err != nil {
 			log.Error().Err(err).Int("chunk", i).Msg("replica challenge: encode failed")
@@ -217,6 +301,10 @@ func (s *Server) handleReplicaChallenge(w http.ResponseWriter, ch auditChallenge
 
 		chunkHash := sha3Sum512(replicaChunk)
 		replicaLeaves[i] = sha3Sum512(chunkHash) // wealdtech pre-hash
+		// Non-challenged replicaChunk goes out of scope here; Go GC can reclaim
+		// it on the next allocation. Peak resident chunk bytes during the loop
+		// is at most two: the one being processed, and the challenged one we
+		// need to keep for the response.
 	}
 
 	siblings := computeMerkleProof(replicaLeaves, ch.ChunkIndex)
@@ -229,13 +317,13 @@ func (s *Server) handleReplicaChallenge(w http.ResponseWriter, ch auditChallenge
 		ChunkIndex:      ch.ChunkIndex,
 		ChunkData:       base64.StdEncoding.EncodeToString(challengedReplicaChunk),
 		MerkleProof:     merkleProof{Siblings: siblings, Index: ch.ChunkIndex},
-		TotalChunkCount: len(allRawChunks),
+		TotalChunkCount: totalChunks,
 		Nonce:           ch.Nonce,
 		Timestamp:       time.Now().Unix(),
 		ProofVersion:    proofVersionV1Replica,
 	}
 
-	log.Info().Str("merkle", ch.MerkleRoot[:16]).Int("chunk", ch.ChunkIndex).Int("total", len(allRawChunks)).Msg("challenge passed (replica)")
+	log.Info().Str("merkle", ch.MerkleRoot[:16]).Int("chunk", ch.ChunkIndex).Int("total", totalChunks).Msg("challenge passed (replica, streaming)")
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -252,10 +340,37 @@ func (s *Server) handleReplicaCommitment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	allRawChunks, err := s.fs.GetAllChunks(merkleBytes)
+	// Streaming implementation: read chunks sequentially and only keep the
+	// O(N*64) replica leaf + chunk-hash hex strings, never the raw or
+	// transformed chunk bytes of more than one chunk at a time. This is the
+	// upload-time path — if it OOMs (as it did on resource-constrained
+	// providers for large objects), the coordinator never stores a
+	// ReplicaCommitment for that (object, provider) pair, and future
+	// challenges silently fall back to V1 raw mode (which had the same
+	// all-chunks-in-memory bug until this same commit). So this handler was
+	// the root cause of the large-file failure cascade on small-RAM nodes.
+	rsc, err := s.fs.GetFileData(merkleBytes)
 	if err != nil {
-		log.Error().Err(err).Str("merkle", merkleHex).Msg("replica-commitment: failed to read chunks")
+		log.Error().Err(err).Str("merkle", merkleHex).Msg("replica-commitment: failed to open object")
 		writeErr(w, http.StatusNotFound, "object not found")
+		return
+	}
+	defer rsc.Close()
+
+	fileSize, err := rsc.Seek(0, io.SeekEnd)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "file seek failed")
+		return
+	}
+	if _, err := rsc.Seek(0, io.SeekStart); err != nil {
+		writeErr(w, http.StatusInternalServerError, "file seek failed")
+		return
+	}
+
+	chunkSize := int64(file_system.DefaultChunkSize)
+	totalChunks := int((fileSize + chunkSize - 1) / chunkSize)
+	if totalChunks == 0 {
+		writeErr(w, http.StatusBadRequest, "object is empty")
 		return
 	}
 
@@ -266,10 +381,22 @@ func (s *Server) handleReplicaCommitment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	replicaHashes := make([]string, len(allRawChunks))
-	replicaLeaves := make([][]byte, len(allRawChunks))
+	replicaHashes := make([]string, totalChunks)
+	replicaLeaves := make([][]byte, totalChunks)
+	readBuf := make([]byte, chunkSize)
 
-	for i, rawChunk := range allRawChunks {
+	for i := 0; i < totalChunks; i++ {
+		n, rerr := io.ReadFull(rsc, readBuf)
+		if rerr == io.EOF && n == 0 {
+			writeErr(w, http.StatusInternalServerError, "file read truncated")
+			return
+		}
+		if rerr != nil && rerr != io.ErrUnexpectedEOF {
+			writeErr(w, http.StatusInternalServerError, "file read failed")
+			return
+		}
+		rawChunk := readBuf[:n]
+
 		replicaChunk, err := encodeReplicaChunk(key, i, rawChunk)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "encode failed")
@@ -278,6 +405,8 @@ func (s *Server) handleReplicaCommitment(w http.ResponseWriter, r *http.Request)
 		chunkHash := sha3Sum512(replicaChunk)
 		replicaHashes[i] = hex.EncodeToString(chunkHash)
 		replicaLeaves[i] = sha3Sum512(chunkHash)
+		// replicaChunk goes out of scope here; Go GC reclaims it on the next
+		// allocation. Only the 64-byte hash and its hex string persist.
 	}
 
 	root := buildMerkleRoot(replicaLeaves)
@@ -288,7 +417,7 @@ func (s *Server) handleReplicaCommitment(w http.ResponseWriter, r *http.Request)
 		ReplicaVersion:     replicaVersion,
 		ReplicaRoot:        hex.EncodeToString(root),
 		ReplicaChunkHashes: replicaHashes,
-		ChunkCount:         len(allRawChunks),
+		ChunkCount:         totalChunks,
 	})
 }
 
