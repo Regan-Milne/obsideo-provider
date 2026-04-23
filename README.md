@@ -8,29 +8,35 @@ ciphertext).
 
 ## Upgrading from v2-2026-04-22-streaming to v2-2026-04-23-retention-auth
 
-If you are currently running `v2-2026-04-22-streaming` (or the legacy
-`datafarmer` binary), **this is a breaking-change release**:
+New binary, new on-disk format. Point it at a fresh data directory
+and leave the old directory alone. You can delete the old folder
+later at your convenience.
 
-- **Storage format changed** from BadgerDB + IPFS blockstore to flat files.
-  The new binary cannot read data written by the old one, and vice versa.
-- **A fresh data directory is required.** Point `data.path` in your
-  `config.yaml` at an empty path. Your existing placements will temporarily
-  fail challenges; the coordinator's rebalancer redistributes them to other
-  providers over 1-3 days. Full score recovery typically takes 3-7 days.
-  No data is lost (the grace period protects objects during redistribution).
-- **New required config blocks** (`coordinator.url` + `coordinator.provider_api_key`
-  + `coverage.enabled: true`). The coordinator admin will deliver your
-  per-operator API key privately.
-- **New on-disk directories** are created by the binary on first start:
-  `ownership/`, `coverage/`, `pause/`, alongside `objects/` and `index/`.
+1. Stop the legacy service.
+2. Install `obsideo-provider` alongside the old `datafarmer` binary.
+3. Create a fresh data directory (convention: `/var/lib/obsideo-provider/data-v2`).
+4. In `config.yaml`, set `data.path` to the new directory, and add:
 
-Full upgrade walkthrough, checksums, and rollback instructions:
+    ```yaml
+    coordinator:
+      url: "https://coordinator.obsideo.io"
+      provider_api_key: "prv_..."   # admin DMs this to you
+    coverage:
+      enabled: true
+    ```
+
+5. Update the systemd `ExecStart=` to the new binary path.
+6. Start. Look for `heartbeat: first success` within ~30 seconds.
+
+If the new binary misbehaves, stop it, flip `ExecStart=` and
+`data.path` back to the old values, restart. The legacy binary starts
+against its untouched data dir.
+
+Your `provider_id`, API key, Noble payout address, capacity, score,
+and placement record live on the coordinator and survive the upgrade.
+
+Full walkthrough, checksums, and rollback:
 [v2-2026-04-23-retention-auth release notes](https://github.com/Regan-Milne/obsideo-provider/releases/tag/v2-2026-04-23-retention-auth).
-
-If the temporary score dip or fresh-start data dir is bad timing for you,
-staying on `v2-2026-04-22-streaming` is a legitimate choice. A BadgerDB to
-flat-file migration tool is not yet written; file an issue if you would use
-one.
 
 ## What this is
 
