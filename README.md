@@ -6,6 +6,32 @@ ciphertext).
 
 **Alpha.** See [Known limitations](#known-limitations) before deploying.
 
+## Upgrading from v2-2026-04-22-streaming to v2-2026-04-23-retention-auth
+
+If you are currently running `v2-2026-04-22-streaming` (or the legacy
+`datafarmer` binary), **this is a breaking-change release**:
+
+- **Storage format changed** from BadgerDB + IPFS blockstore to flat files.
+  The new binary cannot read data written by the old one, and vice versa.
+- **A fresh data directory is required.** Point `data.path` in your
+  `config.yaml` at an empty path. Your existing placements will temporarily
+  fail challenges; the coordinator's rebalancer redistributes them to other
+  providers over 1-3 days. Full score recovery typically takes 3-7 days.
+  No data is lost (the grace period protects objects during redistribution).
+- **New required config blocks** (`coordinator.url` + `coordinator.provider_api_key`
+  + `coverage.enabled: true`). The coordinator admin will deliver your
+  per-operator API key privately.
+- **New on-disk directories** are created by the binary on first start:
+  `ownership/`, `coverage/`, `pause/`, alongside `objects/` and `index/`.
+
+Full upgrade walkthrough, checksums, and rollback instructions:
+[v2-2026-04-23-retention-auth release notes](https://github.com/Regan-Milne/obsideo-provider/releases/tag/v2-2026-04-23-retention-auth).
+
+If the temporary score dip or fresh-start data dir is bad timing for you,
+staying on `v2-2026-04-22-streaming` is a legitimate choice. A BadgerDB to
+flat-file migration tool is not yet written; file an issue if you would use
+one.
+
 ## What this is
 
 A storage node for the Obsideo decentralized storage network. You run
