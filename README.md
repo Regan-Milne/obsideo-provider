@@ -1,151 +1,204 @@
 # Obsideo Provider
 
-A storage provider for the Obsideo decentralized storage network. Run this
-on your hardware to store encrypted data for the network.
+Reference implementation of an Obsideo storage provider. Single Go binary,
+flat-file storage, end-to-end encrypted (providers only ever hold
+ciphertext).
 
-## Start here
-
-- **I want to run a provider** -- [QUICKSTART.md](QUICKSTART.md)
-- **I want to inspect what this does first** -- [TRANSPARENCY.md](TRANSPARENCY.md)
+**Alpha.** See [Known limitations](#known-limitations) before deploying.
 
 ## What this is
 
-Obsideo Provider is a single Go binary that:
+A storage node for the Obsideo decentralized storage network. You run
+this on your hardware; the network pays you per gigabyte-month of paid
+customer data you verifiably retain. All data is encrypted on the
+customer's machine before it reaches your disk — providers never see
+plaintext.
 
-- Receives encrypted file chunks from the network
-- Stores them on your disk
-- Proves it still has them when audited (proof-of-retrievability)
-- Accrues AKT rewards based on storage contributed and uptime (payment system is live but early; settlement is currently manual)
+Key properties for the v2-2026-04-23-retention-auth release onward:
 
-Providers never see plaintext data. All files are encrypted client-side
-before upload. You store ciphertext.
+- **Flat-file storage.** Each object is written as
+  `{data_dir}/objects/{merkle_hex}` (raw ciphertext) plus
+  `{data_dir}/index/{merkle_hex}.json` (chunk hashes). No embedded
+  database, no IPFS dependency.
+- **Ownership persistence.** First upload of an object for a given
+  account writes `{data_dir}/ownership/{merkle_hex}.json` containing
+  the customer's Ed25519 signing pubkey. Write-once (mode `0o444`).
+  The signing pubkey is used to verify user-signed delete commands
+  locally — without coordinator mediation.
+- **Coverage polling.** The binary periodically asks the coordinator
+  "which of the roots I'm holding correspond to paid-through accounts?"
+  Results are cached locally per-merkle. Under coordinator unavailability,
+  the binary retains everything — never prune under uncertainty.
+- **Cold-key circuit breaker.** `POST /control/pause` accepts a cold-
+  key-signed pause signal and halts all coverage-driven prune decisions
+  until auto-expiry. (The current release binary ships with no cold
+  key pinned — the endpoint returns 503 until a subsequent release
+  bakes in a post-ceremony pubkey via Go ldflags.)
 
-## Why run a provider
+## Install — native Linux
 
-- **Contribute storage** to the network and accrue AKT rewards (early-stage; payouts are being rolled out)
-- **No minimum hardware** beyond disk space and a network connection
-- **Runs anywhere**: Docker, bare metal, LXC, cloud (Akash)
-- **Lightweight**: ~16 MB binary, ~42 MB RAM at runtime
+```bash
+# Download the pre-built binary + bundle from the latest release:
+# https://github.com/Regan-Milne/obsideo-provider/releases
 
-## Quick start (Docker)
+wget https://github.com/Regan-Milne/obsideo-provider/releases/download/v2-2026-04-23-retention-auth/obsideo-provider-linux-amd64-v2-2026-04-23.zip
+wget https://github.com/Regan-Milne/obsideo-provider/releases/download/v2-2026-04-23-retention-auth/SHA256SUMS
+sha256sum -c SHA256SUMS
+
+unzip obsideo-provider-linux-amd64-v2-2026-04-23.zip -d obsideo-provider
+cd obsideo-provider
+
+# Edit config.yaml:
+#   provider_id:                    (from the admin who approved you)
+#   coordinator.provider_api_key:   (delivered per-operator)
+#   data.path:                      (absolute path to your storage dir)
+
+./obsideo-provider start --config config.yaml
+```
+
+Expect the first-boot log to include `heartbeat: first success` within
+~30 seconds; coordinator's placement filter now sees you as live.
+
+## Install — Windows
+
+```powershell
+# Download the Windows bundle from releases.
+# Unzip; edit config.yaml; run:
+.\obsideo-provider.exe start --config config.yaml
+```
+
+## Install — from source
 
 ```bash
 git clone https://github.com/Regan-Milne/obsideo-provider.git
 cd obsideo-provider
-cp .env.example .env
-# Edit .env: set TS_AUTHKEY (get one at https://login.tailscale.com/admin/settings/keys)
-docker compose up -d
-docker compose logs -f provider
+go build -trimpath -ldflags "-s -w" -o obsideo-provider .
+./obsideo-provider start --config config.yaml
 ```
 
-Full instructions: [QUICKSTART.md](QUICKSTART.md)
+Go 1.22+ required. Module path is `github.com/Regan-Milne/obsideo-provider`.
 
-## How it connects to the network
+## Docker
+
+Docker infrastructure is **not included in this release.** The legacy
+Docker image (the `datafarmer` binary, Tailscale auto-funnel setup,
+env-var-driven registration) is incompatible with the new binary's
+file-based config. A port to the new binary is tracked as a follow-up
+release.
+
+In the meantime, Docker-using operators have three options:
+
+1. Stay on the legacy release
+   ([v2-2026-04-22-streaming](https://github.com/Regan-Milne/obsideo-provider/releases/tag/v2-2026-04-22-streaming))
+   until Docker support ships for the new binary. You miss out on
+   ownership files, coverage polling, and the circuit breaker, but
+   existing deployments keep working.
+2. Run the native binary on the Docker host directly (e.g., via
+   systemd — see native-Linux install above) and skip Docker.
+3. Write a minimal Dockerfile locally:
+
+   ```dockerfile
+   FROM alpine:3.19
+   RUN apk add --no-cache ca-certificates
+   COPY obsideo-provider /app/obsideo-provider
+   COPY coordinator_pub.pem /app/coordinator_pub.pem
+   COPY config.yaml /app/config.yaml
+   WORKDIR /app
+   EXPOSE 3334
+   CMD ["/app/obsideo-provider", "start", "--config", "/app/config.yaml"]
+   ```
+
+   You manage Tailscale Funnel (or whatever public ingress you use)
+   in a sibling container or on the host, and mount a persistent
+   volume at `/app/data` so `data.path: /app/data` in `config.yaml`
+   is backed by your disk.
+
+## Configuration reference
+
+See `config.example.yaml` for the minimum-viable config. Key fields:
+
+- `provider_id` — UUID assigned at registration. DM the network admin
+  to be approved as an operator; you receive this + the API key out
+  of band.
+- `server.host` / `server.port` — bind address for the provider HTTP
+  server. Default `0.0.0.0:3334`.
+- `data.path` — absolute path to the directory where objects/, index/,
+  ownership/, coverage/, pause/ are created.
+- `tokens.public_key_path` — path to `coordinator_pub.pem`, used to
+  verify incoming upload tokens.
+- `coordinator.url` — coordinator base URL (e.g.
+  `https://coordinator.obsideo.io`).
+- `coordinator.provider_api_key` — your per-operator bearer token
+  for coord-side authentication on coverage polling + earnings APIs.
+- `coverage.enabled` — set `true` to start the daily coverage refresh
+  loop. Default `false` preserves pre-Phase-1 behavior for operators
+  who haven't yet confirmed coordinator compatibility.
+
+## Endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/health` | None | `{"status":"ok"}` |
+| `POST` | `/upload/{merkle}` | Bearer (upload token) | Accept encrypted chunks |
+| `GET` | `/download/{merkle}` | Bearer (download token) | Stream encrypted bytes |
+| `POST` | `/delete/{merkle}` | User Ed25519 signature | User-signed delete (Phase-1) |
+| `POST` | `/control/pause` | Cold-key Ed25519 signature | Activate circuit breaker |
+| `GET` | `/control/pause` | None | Current circuit-breaker state |
+| `POST` | `/challenge` | None | Respond to proof-of-storage challenge |
+| `POST` | `/replicate` | None | Pull-and-push replication from a source provider |
+| `DELETE` | `/objects/{merkle}` | None | Legacy GC delete (off by default in Phase-1 coord) |
+| `GET` | `/list` | None | Enumerate held merkle roots |
+
+Internal endpoints (challenge, replicate, delete, list) are
+unauthenticated by design — the coordinator is the only party that
+should reach them. Restrict at your firewall in production.
+
+## Data layout
 
 ```
-Users/Apps
-    |
-    | HTTPS (encrypted uploads)
-    v
-Coordinator (coordinator.obsideo.io)
-    |
-    | HTTPS (signed tokens)
-    v
-Your Provider (this software)
-    |
-    | Tailscale Funnel (free HTTPS endpoint)
-    v
-Public internet
+data/
+  objects/{merkle_hex}               ciphertext bytes (atomic temp-rename write)
+  index/{merkle_hex}.json            chunk metadata for challenge responses
+  ownership/{merkle_hex}.json        owner pubkeys, write-once mode 0o444
+  coverage/{merkle_hex}.json         cached coverage answer + first_seen_uncovered
+  pause/current.json                 active circuit-breaker pause (if any)
+  pause/last_sequence_number         monotonic counter (replay prevention)
 ```
 
-The provider connects to one coordinator (`https://coordinator.obsideo.io`).
-It does not phone home, collect telemetry, or contact any other service.
-See [TRANSPARENCY.md](TRANSPARENCY.md) for a complete list of every network
-call the binary makes.
+Back up the entire `data/` tree if you want durability across
+migrations. Ownership files are the non-negotiable state — they are
+the provider-side cryptographic binding between an object and the
+account that uploaded it.
 
-## Where data is stored
+## Relationship to the main obsideo-drive repo
 
-All provider data lives in one directory (Docker volume `provider-data`,
-or `/opt/obsideo-provider/data` for native installs):
+This repo is a source mirror of
+[`obsideo-drive/provider-clean/`](https://github.com/Regan-Milne/obsideo-drive/tree/master/provider-clean).
+Coordinator-coupled changes (e.g., upload-token claim shape, coverage
+endpoint contract) are developed in the main repo; the provider side
+is mirrored here per release. Source-of-truth for any ambiguity is
+the main repo's commit referenced in release notes.
 
-| Path | What it is |
-|------|-----------|
-| `objects/` | Encrypted file chunks (the actual stored data) |
-| `fs/` | Metadata database (BadgerDB, used for merkle proofs) |
-| `.identity_ed25519` | Your provider's cryptographic identity (generated once) |
-| `.obsideo-state.json` | Your provider ID (persists across restarts) |
+## Known limitations
 
-Back up this directory to protect stored data. If lost, the coordinator
-replicates affected objects to other providers.
-
-## Inspect before you trust
-
-This repo is designed for transparency. Before running anything, you can
-review:
-
-| Document | What it covers |
-|----------|---------------|
-| [TRANSPARENCY.md](TRANSPARENCY.md) | Every source file, every network call, every dependency, every disk write. The complete "what am I running" answer. |
-| [SECURITY.md](SECURITY.md) | Encryption model, proof-of-retrievability, token authentication, trust boundaries. |
-| [Dockerfile](Dockerfile) | Multi-stage build. No obfuscation, no binary downloads. |
-| [entrypoint.sh](entrypoint.sh) | Every startup step, commented. |
-| [.env.example](.env.example) | Every configuration variable with explanation. |
-
-You can also build the binary yourself and compare:
-
-```bash
-CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o datafarmer .
-sha256sum datafarmer
-```
-
-## Deployment options
-
-| Method | Audience | Guide |
-|--------|----------|-------|
-| **Docker** (recommended) | Most operators | [QUICKSTART.md](QUICKSTART.md) |
-| Native Linux | Ubuntu/Debian sysadmins | [deploy/native-linux/](deploy/native-linux/) |
-| Proxmox LXC | Homelab operators with ZFS | [deploy/lxc/](deploy/lxc/) |
-| Akash Network | Cloud/decentralized compute | [deploy/akash/](deploy/akash/) |
-
-## Provider lifecycle
-
-1. **Deploy** -- start the provider using any method above
-2. **Register** -- the provider auto-registers with the coordinator on first boot
-3. **Approval** -- a network admin approves your provider (status: pending -> active)
-4. **Receive data** -- encrypted uploads start flowing to your node
-5. **Prove storage** -- the coordinator periodically challenges your provider to prove it holds data
-6. **Accrue rewards** -- AKT accrues based on bytes stored and your proof score (payment system is live; settlement is being rolled out)
-
-## Configuration
-
-All configuration is via environment variables (see [.env.example](.env.example)):
-
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `TS_AUTHKEY` | Yes (Docker) | -- | Tailscale auth key for networking |
-| `OBSIDEO_COORDINATOR_URL` | No | `https://coordinator.obsideo.io` | Coordinator endpoint |
-| `OBSIDEO_CAPACITY_BYTES` | No | 10 GB | Storage to advertise |
-| `OBSIDEO_WALLET_ADDRESS` | No | -- | AKT wallet for earnings |
-| `OBSIDEO_PROVIDER_ADDRESS` | No | -- | Set for cloud deploys (skips Tailscale) |
-
-## Status and maturity
-
-Obsideo is in early network operation. The protocol is functional and
-tested. Providers are running and passing challenges. The network is small
-and growing.
-
-What works today:
-- Encrypted uploads and downloads
-- Proof-of-retrievability (automated challenge cycles)
-- Multi-provider replication (configurable factor, default 3)
-- AKT payment accrual (withdrawal and settlement being rolled out)
-- Docker, native Linux, LXC, and Akash deployment
-
-What is coming:
-- Public API documentation portal
-- SDK support for additional languages
-- Automated provider scoring dashboard
+- Docker infrastructure not yet ported (see above).
+- Cold-key circuit breaker inactive until G2 ceremony produces a
+  cold-key pubkey and a subsequent release bakes it in via ldflags.
+- ARM builds not yet produced — linux-amd64 and windows-amd64 only
+  in this release.
+- The legacy `datafarmer` binary's BadgerDB data is not readable
+  by this binary. Operators with existing deployments face a fresh-
+  start migration (rebalancer redistributes; no data loss under the
+  network's grace period).
 
 ## License
 
-MIT
+See [LICENSE](LICENSE).
+
+## Security
+
+Report security findings per [SECURITY.md](SECURITY.md).
+
+## Transparency
+
+Architectural transparency statement: [TRANSPARENCY.md](TRANSPARENCY.md).

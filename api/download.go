@@ -1,57 +1,42 @@
 package api
 
 import (
-	"encoding/hex"
-	"io"
+	"errors"
 	"net/http"
 
-	"github.com/gorilla/mux"
-	"github.com/rs/zerolog/log"
+	"github.com/go-chi/chi/v5"
+	"github.com/Regan-Milne/obsideo-provider/store"
 )
 
-// handleDownload streams the file identified by merkle root.
-//
-// GET /download/{merkle}
-//   Authorization: Bearer <download_token>
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	merkleHex := mux.Vars(r)["merkle"]
+	merkle := chi.URLParam(r, "merkle")
 
-	tok, ok := bearerToken(r)
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "missing Authorization header")
+	// Verify token.
+	tok, err := bearerToken(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	claims, err := s.ver.Verify(tok)
+	claims, err := s.verifier.Verify(tok)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "invalid token: "+err.Error())
+		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	if claims.Type != "download" {
-		writeErr(w, http.StatusForbidden, "token type must be download")
+		writeError(w, http.StatusForbidden, "expected download token")
 		return
 	}
-	if claims.MerkleRoot != merkleHex {
-		writeErr(w, http.StatusForbidden, "token merkle mismatch")
+	if claims.MerkleRoot != merkle {
+		writeError(w, http.StatusForbidden, "token merkle_root does not match URL")
 		return
 	}
-
-	merkleBytes, err := hex.DecodeString(merkleHex)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid merkle hex")
-		return
-	}
-
-	rc, err := s.fs.GetFileData(merkleBytes)
-	if err != nil {
-		log.Error().Err(err).Str("merkle", merkleHex).Msg("download failed")
-		writeErr(w, http.StatusNotFound, "object not found")
-		return
-	}
-	defer rc.Close()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, rc); err != nil {
-		log.Warn().Err(err).Str("merkle", merkleHex).Msg("stream interrupted")
+	if err := s.store.StreamTo(merkle, w); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Header already sent if StreamTo failed partway; best we can do is close.
+			return
+		}
+		return
 	}
 }

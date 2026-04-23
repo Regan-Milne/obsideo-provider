@@ -1,141 +1,88 @@
 package api
 
 import (
-	"encoding/hex"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gorilla/mux"
-	"github.com/Regan-Milne/obsideo-provider/config"
-	providerTypes "github.com/Regan-Milne/obsideo-provider/types"
-	"github.com/rs/zerolog/log"
+	"github.com/go-chi/chi/v5"
+	"github.com/Regan-Milne/obsideo-provider/store"
 )
 
-// handleUpload receives a raw file body, verifies the upload token, and stores the file.
-//
-// POST /upload/{merkle}
-//   Authorization: Bearer <upload_token>
-//   Query params:
-//     owner      - account ID (defaults to token's account_id)
-//     start      - int64, defaults to 0
-//     chunk_size - int, defaults to config.DefaultChunkSize
-//     proof_type - int64, defaults to 0
-//   Body: raw file bytes
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	merkleHex := mux.Vars(r)["merkle"]
+	merkle := chi.URLParam(r, "merkle")
 
-	tok, ok := bearerToken(r)
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "missing Authorization header")
+	// Verify token.
+	tok, err := bearerToken(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	claims, err := s.ver.Verify(tok)
+	claims, err := s.verifier.Verify(tok)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "invalid token: "+err.Error())
+		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	if claims.Type != "upload" {
-		writeErr(w, http.StatusForbidden, "token type must be upload")
+		writeError(w, http.StatusForbidden, "expected upload token")
 		return
 	}
-	if claims.MerkleRoot != merkleHex {
-		writeErr(w, http.StatusForbidden, "token merkle mismatch")
-		return
-	}
-	// Note: we don't validate claims.ProviderID here because the provider doesn't
-	// know its coordinator-assigned UUID at startup. Token signature is sufficient proof.
-
-	merkleBytes, err := hex.DecodeString(merkleHex)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid merkle hex")
+	if claims.MerkleRoot != merkle {
+		writeError(w, http.StatusForbidden, "token merkle_root does not match URL")
 		return
 	}
 
-	owner := r.URL.Query().Get("owner")
-	if owner == "" {
-		owner = claims.AccountID
-	}
-
-	start := int64(0)
-	if v := r.URL.Query().Get("start"); v != "" {
-		start, err = strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid start")
-			return
+	chunkSize := store.DefaultChunkSize
+	if cs := r.URL.Query().Get("chunk_size"); cs != "" {
+		if n, err := strconv.Atoi(cs); err == nil && n > 0 {
+			chunkSize = n
 		}
 	}
 
-	chunkSize := int64(config.DefaultChunkSize)
-	if v := r.URL.Query().Get("chunk_size"); v != "" {
-		chunkSize, err = strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid chunk_size")
-			return
+	// Read body.
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+
+	if err := s.store.Put(merkle, data, chunkSize); err != nil {
+		writeError(w, http.StatusInternalServerError, "store: "+err.Error())
+		return
+	}
+
+	// Retention-authority Phase 1: if the upload token carries both
+	// customer pubkeys, persist the ownership file at mode 0o444.
+	// Legacy-account uploads (token missing OwnerSigPubkey) skip the
+	// write entirely per docs/retention_authority_design.md §9.2 —
+	// those objects are not subject to user-signed delete.
+	//
+	// The object bytes have already been written; an ownership write
+	// failure here is an internal error but does not invalidate the
+	// stored chunks. Respond 500 so the client knows something is
+	// off; a retry will hit the ErrOwnershipExists branch and be
+	// rejected (which is desired: if a malformed pass wrote a bad
+	// ownership file, an operator should investigate rather than
+	// silently overwriting).
+	if claims.OwnerPubkey != "" && claims.OwnerSigPubkey != "" {
+		own := store.Ownership{
+			OwnerPubkey:    claims.OwnerPubkey,
+			OwnerSigPubkey: claims.OwnerSigPubkey,
+			ReceivedAt:     time.Now().UTC(),
+		}
+		if err := s.store.PutOwnership(merkle, own); err != nil {
+			// Idempotency: if ownership already exists for this merkle,
+			// the write-once invariant says we leave it alone and return
+			// success — a replay of the same upload is expected to
+			// converge on the same state, not overwrite.
+			if !errors.Is(err, store.ErrOwnershipExists) {
+				writeError(w, http.StatusInternalServerError, "store ownership: "+err.Error())
+				return
+			}
 		}
 	}
 
-	proofType := int64(providerTypes.ProofTypeDefault)
-	if v := r.URL.Query().Get("proof_type"); v != "" {
-		proofType, err = strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid proof_type")
-			return
-		}
-	}
-
-	declaredLen := r.Header.Get("Content-Length")
-	log.Info().
-		Str("merkle", merkleHex).
-		Str("content_length", declaredLen).
-		Int64("chunk_size", chunkSize).
-		Msg("upload: reading body")
-
-	// Limit upload body to 5 GB to prevent memory exhaustion.
-	const maxUploadBytes = 5 * 1024 * 1024 * 1024 // 5 GB
-	limited := http.MaxBytesReader(w, r.Body, maxUploadBytes)
-
-	tRead := time.Now()
-	body, err := io.ReadAll(limited)
-	readDur := time.Since(tRead)
-	if err != nil {
-		log.Error().Err(err).Str("merkle", merkleHex).
-			Dur("read_dur", readDur).
-			Msg("upload: body read error")
-		writeErr(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-	if len(body) == 0 {
-		writeErr(w, http.StatusBadRequest, "empty body")
-		return
-	}
-	log.Info().
-		Str("merkle", merkleHex).
-		Int("body_bytes", len(body)).
-		Dur("read_dur", readDur).
-		Msg("upload: body read complete")
-
-	tWrite := time.Now()
-	reader := providerTypes.NewBytesSeeker(body)
-	size, err := s.fs.WriteFile(reader, merkleBytes, owner, start, chunkSize, proofType)
-	writeDur := time.Since(tWrite)
-	if err != nil {
-		log.Error().Err(err).Str("merkle", merkleHex).
-			Dur("write_dur", writeDur).
-			Msg("upload failed")
-		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("write failed: %s", err))
-		return
-	}
-
-	log.Info().
-		Str("merkle", merkleHex).
-		Int("size", size).
-		Dur("write_dur", writeDur).
-		Msg("upload stored")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"merkle_root": merkleHex,
-		"size_bytes":  size,
-	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

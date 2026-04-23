@@ -8,19 +8,21 @@ import (
 )
 
 const (
-	DefaultPort         = 3334
-	DefaultChunkSize    = 1048576 // 1 MiB -- must match SDK and coordinator
-	DefaultReadTimeout  = 7200   // 2 hours -- supports large-file uploads over slow tunnels
-	DefaultWriteTimeout = 7200   // 2 hours -- supports large-file downloads
+	DefaultPort                    = 3334
+	DefaultReadTimeout             = 30
+	DefaultWriteTimeout            = 300
+	DefaultCoverageRefreshSeconds  = 24 * 60 * 60 // 24 hours per design §5
+	DefaultCoverageBatchSize       = 500
+	DefaultCoverageRequestTimeoutS = 30
 )
 
 type Config struct {
-	ProviderID     string       `yaml:"provider_id"`
-	CoordinatorURL string       `yaml:"coordinator_url"`
-	WalletAddress  string       `yaml:"wallet_address"`
-	Server         ServerConfig `yaml:"server"`
-	DB             DBConfig     `yaml:"db"`
-	Tokens         TokensConfig `yaml:"tokens"`
+	ProviderID  string            `yaml:"provider_id"`
+	Server      ServerConfig      `yaml:"server"`
+	Data        DataConfig        `yaml:"data"`
+	Tokens      TokensConfig      `yaml:"tokens"`
+	Coordinator CoordinatorConfig `yaml:"coordinator"`
+	Coverage    CoverageConfig    `yaml:"coverage"`
 }
 
 type ServerConfig struct {
@@ -30,13 +32,55 @@ type ServerConfig struct {
 	WriteTimeout int    `yaml:"write_timeout"`
 }
 
-type DBConfig struct {
+type DataConfig struct {
 	Path string `yaml:"path"`
 }
 
 type TokensConfig struct {
 	PublicKeyPath string `yaml:"public_key_path"`
 }
+
+// CoordinatorConfig carries outbound-connection details. Empty URL or
+// empty APIKey means the provider will not attempt outbound calls, which
+// is acceptable for local dev where the provider only handles inbound
+// requests from a local coord.
+type CoordinatorConfig struct {
+	// URL is the coord's base URL, e.g. "https://coordinator.obsideo.io".
+	// No trailing slash.
+	URL string `yaml:"url"`
+
+	// ProviderAPIKey is the provider's API key for coord-side
+	// authentication. Stored in config rather than env to match the
+	// existing provider-clean secret-loading pattern; operators deploying
+	// via Akash/Docker inject the key via the config file they mount.
+	ProviderAPIKey string `yaml:"provider_api_key"`
+}
+
+// CoverageConfig controls the retention-authority coverage refresh job.
+// See docs/retention_authority_design.md §4.2 + §6.2.
+type CoverageConfig struct {
+	// RefreshIntervalS is the period between full batch-refresh cycles.
+	// Design default 24 hours (spec §5 `batch_refresh_interval`).
+	RefreshIntervalS int `yaml:"refresh_interval_s"`
+
+	// BatchSize bounds the number of roots in a single coverage query.
+	// Must not exceed the coord's MaxCoverageRequestBatch (1000).
+	BatchSize int `yaml:"batch_size"`
+
+	// RequestTimeoutS is the per-HTTP-call timeout.
+	RequestTimeoutS int `yaml:"request_timeout_s"`
+
+	// Enabled gates the refresh loop startup. Operators set this to true
+	// once their provider-clean is upgraded to Phase 1 and the coord
+	// coverage endpoint is reachable. Default false (no-op), which keeps
+	// pre-Phase-1 deployments unchanged until explicitly opted in.
+	Enabled bool `yaml:"enabled"`
+}
+
+// NOTE: the retention-authority circuit-breaker cold-key pubkey is
+// intentionally NOT configured here. It is injected at binary build time
+// via Go linker flags (see pausectl/embedded.go). Runtime config is not
+// a trust root for an emergency-brake credential.
 
 func Load(path string) (*Config, error) {
 	cfg := &Config{
@@ -46,19 +90,38 @@ func Load(path string) (*Config, error) {
 			ReadTimeout:  DefaultReadTimeout,
 			WriteTimeout: DefaultWriteTimeout,
 		},
-		DB:     DBConfig{Path: "./data"},
+		Data:   DataConfig{Path: "./data"},
 		Tokens: TokensConfig{PublicKeyPath: "coordinator_pub.pem"},
+		Coverage: CoverageConfig{
+			RefreshIntervalS: DefaultCoverageRefreshSeconds,
+			BatchSize:        DefaultCoverageBatchSize,
+			RequestTimeoutS:  DefaultCoverageRequestTimeoutS,
+		},
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
-		}
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		// Silent-default-on-missing is a trap: the operator starts the
+		// binary with the wrong CWD, gets empty provider_id + empty
+		// coord URL, and the heartbeat loop silently disables itself
+		// while the HTTP listener comes up fine. Fail loudly instead.
+		return nil, fmt.Errorf("read config %s: %w (check working directory and --config path)", path, err)
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+
+	// Apply defaults to the Coverage block for fields the operator may
+	// have omitted. Must happen AFTER Unmarshal so explicit zero values
+	// aren't clobbered by the block-level defaults above.
+	if cfg.Coverage.RefreshIntervalS == 0 {
+		cfg.Coverage.RefreshIntervalS = DefaultCoverageRefreshSeconds
+	}
+	if cfg.Coverage.BatchSize == 0 {
+		cfg.Coverage.BatchSize = DefaultCoverageBatchSize
+	}
+	if cfg.Coverage.RequestTimeoutS == 0 {
+		cfg.Coverage.RequestTimeoutS = DefaultCoverageRequestTimeoutS
 	}
 	return cfg, nil
 }

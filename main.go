@@ -1,7 +1,27 @@
 package main
 
-import "github.com/Regan-Milne/obsideo-provider/cmd"
+import (
+	"flag"
+	"log"
+	"os"
+
+	"github.com/Regan-Milne/obsideo-provider/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	if len(os.Args) < 2 {
+		log.Fatal("usage: obsideo-provider start [--config <path>]")
+	}
+
+	switch os.Args[1] {
+	case "start":
+		fs := flag.NewFlagSet("start", flag.ExitOnError)
+		cfgPath := fs.String("config", "config.yaml", "path to config file")
+		_ = fs.Parse(os.Args[2:])
+		if err := cmd.Start(*cfgPath); err != nil {
+			log.Fatal(err)
+		}
+	default:
+		log.Fatalf("unknown command: %s", os.Args[1])
+	}
 }

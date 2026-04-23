@@ -1,0 +1,17 @@
+# obsideo-provider configuration example.
+# Copy to config.yaml and edit before running.
+
+provider_id: "my-provider-1"   # human-readable label; not used for auth
+
+server:
+  host: "0.0.0.0"
+  port: 3334
+  read_timeout: 30
+  write_timeout: 300
+
+data:
+  path: "./data"                # objects/ and index/ subdirs created here on first run
+
+tokens:
+  public_key_path: "coordinator_pub.pem"
+  # Copy from coordinator/data/coordinator.pub after the coordinator first starts.

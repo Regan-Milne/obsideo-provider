@@ -1,57 +1,39 @@
 package api
 
 import (
-	"encoding/hex"
+	"bytes"
+	"io"
 	"net/http"
 
-	"github.com/gorilla/mux"
-	"github.com/rs/zerolog/log"
+	"github.com/go-chi/chi/v5"
 )
 
-// handleDeleteObject removes a stored object.
-// Called by the coordinator's GC after confirming no remaining references.
-//
-// DELETE /objects/{merkle}
-func (s *Server) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
-	merkleHex := mux.Vars(r)["merkle"]
-
-	merkleBytes, err := hex.DecodeString(merkleHex)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid merkle hex")
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	merkle := chi.URLParam(r, "merkle")
+	if err := s.store.Delete(merkle); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Delete all tree entries for this merkle root regardless of (owner, start).
-	// The GC calls this endpoint knowing only the merkle root; it doesn't carry
-	// the original owner/start metadata.
-	if err := s.fs.DeleteAllForMerkle(merkleBytes); err != nil {
-		log.Error().Err(err).Str("merkle", merkleHex).Msg("delete failed")
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	log.Info().Str("merkle", merkleHex).Msg("object deleted")
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleList returns all merkle roots stored on this provider.
-// Used by the coordinator's GC to enumerate stored objects.
-//
-// GET /list
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	merkles, _, _, err := s.fs.ListFiles()
+	roots, err := s.store.List()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	hexRoots := make([]string, len(merkles))
-	for i, m := range merkles {
-		hexRoots[i] = hex.EncodeToString(m)
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"merkle_roots": hexRoots,
-		"count":        len(hexRoots),
+		"merkle_roots": roots,
+		"count":        len(roots),
 	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// newBytesReader wraps a byte slice in an io.Reader for use as an HTTP request body.
+func newBytesReader(data []byte) io.Reader {
+	return bytes.NewReader(data)
 }
