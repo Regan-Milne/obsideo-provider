@@ -170,14 +170,23 @@ migrations. Ownership files are the non-negotiable state — they are
 the provider-side cryptographic binding between an object and the
 account that uploaded it.
 
-## Relationship to the main obsideo-drive repo
+## Source tree provenance
 
-This repo is a source mirror of
-[`obsideo-drive/provider-clean/`](https://github.com/Regan-Milne/obsideo-drive/tree/master/provider-clean).
-Coordinator-coupled changes (e.g., upload-token claim shape, coverage
-endpoint contract) are developed in the main repo; the provider side
-is mirrored here per release. Source-of-truth for any ambiguity is
-the main repo's commit referenced in release notes.
+This repo is the public, releasable form of the provider source. The
+development history lives in a private upstream monorepo where the
+provider code is co-developed with the coordinator; each release tag
+here corresponds to a mirror of the upstream source at a specific
+commit, with the Go module path rewritten from the upstream's
+internal path (`github.com/obsideo/obsideo-provider`) to this repo's
+public path (`github.com/Regan-Milne/obsideo-provider`).
+
+The authoritative source for any release is the tagged commit in
+this repo. Release notes name the tag (e.g.
+`v2-2026-04-23-retention-auth`) and the exact commit. Clone, check
+out the tag, `go build`, and you will produce a binary equivalent to
+the attached release artifact (same SHA-256).
+
+Issues + discussion: file on this repo's issue tracker.
 
 ## Known limitations
 
