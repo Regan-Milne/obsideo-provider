@@ -4,6 +4,11 @@ Reference implementation of an Obsideo storage provider. Single Go binary,
 flat-file storage, end-to-end encrypted (providers only ever hold
 ciphertext).
 
+For network-level architecture — design principles, encryption model,
+challenge protocol, payment model, threat model — see
+[obsideo-protocol](https://github.com/Regan-Milne/obsideo-protocol).
+This repository is the operator-facing implementation.
+
 **Alpha.** See [Known limitations](#known-limitations) before deploying.
 
 ## Upgrading from v2-2026-04-22-streaming to v2-2026-04-23-retention-auth
@@ -238,8 +243,9 @@ See [LICENSE](LICENSE).
 
 ## Security
 
-Report security findings per [SECURITY.md](SECURITY.md).
+Vulnerability reporting: see [SECURITY.md](SECURITY.md).
+Threat model and design properties live in [obsideo-protocol](https://github.com/Regan-Milne/obsideo-protocol/blob/main/ARCHITECTURE.md) §8.
 
 ## Transparency
 
-Architectural transparency statement: [TRANSPARENCY.md](TRANSPARENCY.md).
+What this binary actually does, what it stores, what it talks to: [TRANSPARENCY.md](TRANSPARENCY.md).

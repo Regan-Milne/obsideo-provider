@@ -25,7 +25,7 @@ build, configure, start, register with a coordinator, and verify the full storag
 ## Prerequisites
 
 - **Go 1.22 or later** — only required to build; the binary has no runtime dependencies
-- **A reachable address** — the coordinator must be able to make outbound HTTP(S) requests to your provider at registration time and on every challenge cycle (every 8 hours)
+- **A reachable address** — the coordinator must be able to make outbound HTTP(S) requests to your provider at registration time and on every challenge cycle (every 4 hours)
   - For local/dev: `http://127.0.0.1:3334` works
   - For production: a public HTTPS URL (e.g. `https://storage.example.com`)
   - For NAT-restricted setups: a tunnel URL (ngrok, Cloudflare Tunnel, etc.) pointing to your local port
@@ -175,7 +175,7 @@ curl -s -X POST <coordinator-url>/internal/providers/<your-id>/approve
 
 Once `status` is `active`, the coordinator will:
 - Route new uploads to your provider
-- Include your provider in challenge cycles (every 8 hours)
+- Include your provider in challenge cycles (every 4 hours)
 - Replicate to your provider when another provider fails a challenge
 
 ### Checking your status
@@ -189,7 +189,7 @@ Key fields:
 | Field | Meaning |
 |-------|---------|
 | `status` | `pending` / `active` / `suspended` |
-| `score` | Float `[0.0, 1.0]`. Starts at 1.0. Below 0.7 = excluded from new uploads. |
+| `score` | Vestigial field, retained in the schema but not actively updated by the current challenger. Check `last_heartbeat` and recent challenge pass history instead. |
 | `used_bytes` | Storage in use as tracked by the coordinator. |
 | `last_heartbeat` | Last time the coordinator confirmed your provider was alive. |
 
@@ -330,15 +330,16 @@ The provider does not have the object. Possible causes:
 - The data directory was wiped or the object was deleted before GC issued the delete instruction
 - Wrong `merkle` value in the challenge request
 
-### Score is dropping
+### Challenges are failing
 
-The coordinator is issuing challenges that your provider is failing.
+The coordinator is issuing challenges that your provider isn't passing. Each
+failed challenge means no per-cycle credit for that placement.
 
 1. Check coordinator logs for `challenge error` entries — they include the merkle root and error message
 2. Manually test the challenge endpoint (see above) to confirm the provider responds correctly
-3. If the data directory was reset or moved, the provider has lost its stored objects — re-upload or wait for the coordinator to replicate
+3. If the data directory was reset or moved, the provider has lost its stored objects — the coordinator's reconciliation flow will eventually replicate them elsewhere
 
-Score recovers at +0.01 per passing challenge. With the default 8-hour cycle, recovery from 0.6 to 1.0 takes approximately 33 cycles (11 days). There is no manual score reset in v1 — contact the coordinator operator.
+Earnings recover automatically once challenges start passing again; there is no separate score that decays and recovers. The current model is "prove it, get paid; don't, don't" per cycle.
 
 ### `data/objects/` is growing but `data/index/` has gaps
 
@@ -360,8 +361,8 @@ This is **alpha software** running on a pre-production network.
 | **No TLS built in** | The provider serves plain HTTP. Use a reverse proxy (nginx, caddy) for HTTPS in production. |
 | **Single-node only** | No clustering, no shared storage between provider instances. One process per data directory. |
 | **No capacity enforcement** | The provider does not reject uploads when `capacity_bytes` is exceeded. The coordinator tracks used_bytes but does not enforce server-side. |
-| **Challenge window is fixed** | Coordinator challenges every 8 hours. No per-provider tuning. |
-| **Score recovery is slow** | +0.01 per passing challenge. Recovery from 0.0 to above the 0.7 floor takes 70 cycles (23+ days). |
+| **Challenge window is fixed** | Coordinator challenges every 4 hours. No per-provider tuning. |
+| **Earnings track challenge pass history per cycle** | A failed challenge means no credit for that placement that cycle. There is no separate score field actively driving placement decisions. |
 | **Manual approval required** | All new providers require a coordinator operator to call `/internal/providers/{id}/approve`. |
 | **No address update** | If your provider's public address changes, you must re-register. |
 | **Chunk size discrepancy** | The platform spec defines 1 MiB chunks. The current coordinator and upload tool use 10,240 bytes in dev mode. The provider records whichever chunk size the client used, so challenges always work — but the discrepancy should be resolved before mainnet. |
