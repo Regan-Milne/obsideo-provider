@@ -57,7 +57,7 @@ func Start(cfgPath string) error {
 			cur.Signal.SequenceNumber, cur.Signal.ExpiresAt)
 	}
 
-	srv := api.New(st, v, pauseState, cfg.ProviderID)
+	srv := api.New(st, v, pauseState, cfg.ProviderID, cfg.AcceptsUncontractedData())
 
 	// Heartbeat loop: keep coord's LastHeartbeat fresh so placement
 	// filter doesn't reject us as stale. Only starts if both

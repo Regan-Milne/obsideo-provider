@@ -26,8 +26,16 @@ type Claims struct {
 	AccountID      string `json:"account_id"`
 	OwnerPubkey    string `json:"owner_pubkey,omitempty"`
 	OwnerSigPubkey string `json:"owner_sig_pubkey,omitempty"`
-	IssuedAt       int64  `json:"iat"`
-	ExpiresAt      int64  `json:"exp"`
+	// Contracted records account.IsContracted(acct, now) at coord
+	// token-mint time. Populated on upload tokens; absent on download
+	// tokens. The upload handler consumes this to enforce the operator's
+	// `accept_uncontracted_data` config gate at the upload boundary —
+	// same canonical predicate the GC sweeper uses, just earlier in the
+	// data lifecycle. Single source of truth for "is the provider being
+	// paid to keep this right now?".
+	Contracted bool  `json:"contracted,omitempty"`
+	IssuedAt   int64 `json:"iat"`
+	ExpiresAt  int64 `json:"exp"`
 }
 
 // Verifier holds the coordinator's Ed25519 public key.

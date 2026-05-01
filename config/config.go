@@ -25,6 +25,25 @@ type Config struct {
 	Coordinator CoordinatorConfig `yaml:"coordinator"`
 	Coverage    CoverageConfig    `yaml:"coverage"`
 	GC          gc.Config         `yaml:"gc"`
+	// AcceptUncontractedData controls whether the upload handler accepts
+	// uploads from non-contracted accounts (testdrive, expired paid,
+	// unregistered). Default true — operators ingest everything coord
+	// places on them. Set false to refuse non-contracted uploads at the
+	// boundary; the bytes never touch disk. Same canonical predicate the
+	// GC sweeper consumes (Contracted = paid + active + unexpired), just
+	// enforced at ingress instead of at retention-window expiry. Pointer
+	// type so an omitted YAML key reads as nil → defaults to true; an
+	// explicit `false` is preserved.
+	AcceptUncontractedData *bool `yaml:"accept_uncontracted_data,omitempty"`
+}
+
+// AcceptsUncontractedData returns the effective gate value, applying the
+// default-true policy when the operator omits the field from config.
+func (c *Config) AcceptsUncontractedData() bool {
+	if c.AcceptUncontractedData == nil {
+		return true
+	}
+	return *c.AcceptUncontractedData
 }
 
 type ServerConfig struct {

@@ -48,7 +48,7 @@ func newTestServerWithVerifier(t *testing.T) (*Server, ed25519.PrivateKey) {
 		t.Fatalf("store.New: %v", err)
 	}
 	v := tokens.NewVerifierForTesting(pub)
-	return New(st, v, nil, ""), priv
+	return New(st, v, nil, "", true), priv
 }
 
 func uploadTo(t *testing.T, srv *Server, merkle, token string, body []byte) *httptest.ResponseRecorder {

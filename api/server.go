@@ -13,11 +13,12 @@ import (
 
 // Server is the provider HTTP server.
 type Server struct {
-	store      *store.Store
-	verifier   *tokens.Verifier
-	nonces     *nonceCache
-	pause      *pausectl.State // nil when no cold key configured
-	providerID string          // echoed in challenge responses; "" disables strict provider_id checks
+	store                  *store.Store
+	verifier               *tokens.Verifier
+	nonces                 *nonceCache
+	pause                  *pausectl.State // nil when no cold key configured
+	providerID             string          // echoed in challenge responses; "" disables strict provider_id checks
+	acceptUncontractedData bool            // operator policy: accept uploads from non-contracted accounts
 }
 
 // New creates a Server. Pass nil for pause to disable the circuit
@@ -25,14 +26,19 @@ type Server struct {
 // false) — this matches pre-Phase-1 deployments that have not yet
 // configured a cold-key pubkey. providerID is echoed in challenge
 // responses and used to reject mis-targeted challenges; pass "" to
-// skip the targeting check (test/local-dev shape).
-func New(st *store.Store, v *tokens.Verifier, pause *pausectl.State, providerID string) *Server {
+// skip the targeting check (test/local-dev shape). acceptUncontractedData
+// gates the upload handler — when false, uploads with claims.Contracted
+// == false are rejected with HTTP 403 before any bytes touch disk.
+// Default-true at the config layer; pass true here to preserve existing
+// permissive behavior.
+func New(st *store.Store, v *tokens.Verifier, pause *pausectl.State, providerID string, acceptUncontractedData bool) *Server {
 	return &Server{
-		store:      st,
-		verifier:   v,
-		nonces:     newNonceCache(deleteCommandNonceTTL),
-		pause:      pause,
-		providerID: providerID,
+		store:                  st,
+		verifier:               v,
+		nonces:                 newNonceCache(deleteCommandNonceTTL),
+		pause:                  pause,
+		providerID:             providerID,
+		acceptUncontractedData: acceptUncontractedData,
 	}
 }
 

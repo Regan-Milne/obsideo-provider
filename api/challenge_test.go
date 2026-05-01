@@ -40,7 +40,7 @@ func TestHandleChallengeCanonicalRawMode(t *testing.T) {
 		t.Fatalf("GetIndex: %v", err)
 	}
 
-	server := New(st, nil, nil, "test-provider-id")
+	server := New(st, nil, nil, "test-provider-id", true)
 
 	const chunkIndex = 1
 	body, _ := json.Marshal(auditChallenge{
@@ -142,7 +142,7 @@ func TestHandleChallengeRejectsExpired(t *testing.T) {
 	if err := st.Put(merkle, []byte("hello"), store.DefaultChunkSize); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	server := New(st, nil, nil, "")
+	server := New(st, nil, nil, "", true)
 	body, _ := json.Marshal(auditChallenge{
 		ChallengeID: "ch-old",
 		MerkleRoot:  merkle,
@@ -161,7 +161,7 @@ func TestHandleChallengeRejectsExpired(t *testing.T) {
 func TestHandleChallengeRejectsMissingMerkleRoot(t *testing.T) {
 	tempDir := t.TempDir()
 	st, _ := store.New(filepath.Join(tempDir, "provider"))
-	server := New(st, nil, nil, "")
+	server := New(st, nil, nil, "", true)
 	body := []byte(`{"challenge_id":"x","chunk_index":0,"nonce":"00","expires_at":9999999999}`)
 	req := httptest.NewRequest(http.MethodPost, "/challenge", bytes.NewReader(body))
 	res := httptest.NewRecorder()

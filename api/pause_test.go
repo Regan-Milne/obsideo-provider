@@ -44,7 +44,7 @@ func newPauseAPIEnv(t *testing.T) *pauseAPIEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, nil, state, "")
+	srv := New(st, nil, state, "", true)
 	return &pauseAPIEnv{srv: srv, coldPri: coldPri}
 }
 
@@ -126,7 +126,7 @@ func TestHandlePauseSignal_NotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, nil, state, "")
+	srv := New(st, nil, state, "", true)
 
 	// Signature doesn't matter — should 503 before touching it.
 	rec := postPause(t, srv, pausectl.Envelope{Payload: "{}", Signature: "x"})
@@ -140,7 +140,7 @@ func TestHandlePauseSignal_NilPauseState(t *testing.T) {
 	// old two-arg New()). The handler must 503 without panicking.
 	dir := t.TempDir()
 	st, _ := store.New(filepath.Join(dir, "provider"))
-	srv := New(st, nil, nil, "")
+	srv := New(st, nil, nil, "", true)
 
 	rec := postPause(t, srv, pausectl.Envelope{Payload: "{}", Signature: "x"})
 	if rec.Code != http.StatusServiceUnavailable {
@@ -270,7 +270,7 @@ func TestHandlePauseStatus(t *testing.T) {
 func TestHandlePauseStatus_Unconfigured(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := store.New(filepath.Join(dir, "provider"))
-	srv := New(st, nil, nil, "")
+	srv := New(st, nil, nil, "", true)
 
 	rec := getPause(t, srv)
 	if rec.Code != http.StatusOK {

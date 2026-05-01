@@ -35,7 +35,7 @@ func deleteTestEnv(t *testing.T) (*Server, ed25519.PrivateKey, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, nil, nil, "") // verifier + pause nil; delete-signed uses neither
+	srv := New(st, nil, nil, "", true) // verifier + pause nil; delete-signed uses neither
 	return srv, priv, sigFingerprint
 }
 

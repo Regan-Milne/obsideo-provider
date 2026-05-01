@@ -34,6 +34,17 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// accept_uncontracted_data gate. Same Contracted predicate the GC
+	// sweeper consumes; enforced at ingress instead of at retention-window
+	// expiry. Default-true at the config layer (pass-through behavior);
+	// operators set false to refuse testdrive / expired-paid / unregistered
+	// uploads. Bytes never touch disk when the gate fires.
+	if !claims.Contracted && !s.acceptUncontractedData {
+		writeError(w, http.StatusForbidden,
+			"this provider's accept_uncontracted_data policy is false; non-contracted uploads are refused at the boundary")
+		return
+	}
+
 	chunkSize := store.DefaultChunkSize
 	if cs := r.URL.Query().Get("chunk_size"); cs != "" {
 		if n, err := strconv.Atoi(cs); err == nil && n > 0 {
