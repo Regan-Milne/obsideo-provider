@@ -5,12 +5,12 @@ import (
 	"log"
 	"os"
 
-	"github.com/Regan-Milne/obsideo-provider/cmd"
+	"github.com/obsideo/obsideo-provider/cmd"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: obsideo-provider start [--config <path>]")
+		log.Fatal("usage: provider-clean start [--config <path>]")
 	}
 
 	switch os.Args[1] {

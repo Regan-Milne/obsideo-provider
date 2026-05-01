@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/coverage"
-	"github.com/Regan-Milne/obsideo-provider/pausectl"
-	"github.com/Regan-Milne/obsideo-provider/store"
-	"github.com/Regan-Milne/obsideo-provider/tokens"
+	"github.com/obsideo/obsideo-provider/coverage"
+	"github.com/obsideo/obsideo-provider/pausectl"
+	"github.com/obsideo/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/tokens"
 )
 
 // Retention-authority Phase 1 invariant test coverage. Each top-level

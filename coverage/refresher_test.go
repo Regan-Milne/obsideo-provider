@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/store"
 )
 
 // ----- Test harness -----
@@ -114,6 +114,65 @@ func TestRefresher_RunOnce_PopulatesCoverage(t *testing.T) {
 	b, err := st.GetCoverage(merkles[1])
 	if err != nil || b.Status != "uncovered" || b.FirstSeenUncovered == nil {
 		t.Errorf("b-root: %+v err=%v", b, err)
+	}
+}
+
+// ----- Contracted bool: load-bearing field must propagate from wire to cache -----
+
+// Regression: the wire→cache plumbing missed the Contracted field at first
+// ship, so paid-active-unexpired objects came back as Contracted=false in
+// the local cache (Go zero value), making GC see every object as a
+// candidate. This test pins the bool through.
+func TestRefresher_PropagatesContractedBool(t *testing.T) {
+	paidMerkle := strings.Repeat("a", 64)         // contracted=true
+	testdriveMerkle := strings.Repeat("b", 64)    // contracted=false
+	expiredMerkle := strings.Repeat("c", 64)      // contracted=false
+	st := newTempStoreWithObjects(t, paidMerkle, testdriveMerkle, expiredMerkle)
+
+	srv, _ := mockCoord(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req Request
+		_ = json.Unmarshal(body, &req)
+		resp := Response{}
+		for _, root := range req.Roots {
+			switch root[0] {
+			case 'a':
+				resp[root] = RootStatus{Status: "covered", Contracted: true, Until: "2026-06-01T00:00:00Z"}
+			case 'b':
+				resp[root] = RootStatus{Status: "covered", Contracted: false}
+			case 'c':
+				resp[root] = RootStatus{Status: "uncovered", Contracted: false, Reason: "contract_expired"}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer srv.Close()
+
+	r := &Refresher{Store: st, Client: zeroRetryClient(srv, 0), Interval: time.Hour, BatchSize: 500}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	got, err := st.GetCoverage(paidMerkle)
+	if err != nil || got.Status != "covered" || got.Contracted != true {
+		t.Errorf("paid: status=%q contracted=%v err=%v; want covered/true", got.Status, got.Contracted, err)
+	}
+	if got.FirstSeenNonContracted != nil {
+		t.Errorf("paid: FirstSeenNonContracted should be nil for contracted=true root, got %v", got.FirstSeenNonContracted)
+	}
+
+	got, err = st.GetCoverage(testdriveMerkle)
+	if err != nil || got.Status != "covered" || got.Contracted != false {
+		t.Errorf("testdrive: status=%q contracted=%v err=%v; want covered/false", got.Status, got.Contracted, err)
+	}
+	if got.FirstSeenNonContracted == nil {
+		t.Errorf("testdrive: FirstSeenNonContracted should be set for contracted=false root")
+	}
+
+	got, err = st.GetCoverage(expiredMerkle)
+	if err != nil || got.Status != "uncovered" || got.Contracted != false {
+		t.Errorf("expired: status=%q contracted=%v err=%v; want uncovered/false", got.Status, got.Contracted, err)
 	}
 }
 

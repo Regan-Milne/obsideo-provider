@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/store"
 )
 
 // PauseChecker reports whether the provider's circuit breaker is
@@ -127,9 +127,10 @@ func (r *Refresher) RunOnce(ctx context.Context) error {
 				continue
 			}
 			update := store.CoverageAnswer{
-				Status: ans.Status,
-				Until:  ans.Until,
-				Reason: ans.Reason,
+				Status:     ans.Status,
+				Contracted: ans.Contracted,
+				Until:      ans.Until,
+				Reason:     ans.Reason,
 			}
 			if err := r.Store.UpdateCoverage(root, update, now); err != nil {
 				failed++

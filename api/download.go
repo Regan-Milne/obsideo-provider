@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/Regan-Milne/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/store"
 )
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {

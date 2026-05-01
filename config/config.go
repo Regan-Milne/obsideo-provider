@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/obsideo/obsideo-provider/gc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,6 +24,7 @@ type Config struct {
 	Tokens      TokensConfig      `yaml:"tokens"`
 	Coordinator CoordinatorConfig `yaml:"coordinator"`
 	Coverage    CoverageConfig    `yaml:"coverage"`
+	GC          gc.Config         `yaml:"gc"`
 }
 
 type ServerConfig struct {
@@ -122,6 +124,16 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Coverage.RequestTimeoutS == 0 {
 		cfg.Coverage.RequestTimeoutS = DefaultCoverageRequestTimeoutS
+	}
+
+	// GC config: apply locked-design defaults to any zero-valued field
+	// then validate. ApplyDefaults runs unconditionally so that even a
+	// disabled GC block has fully-populated values an operator can
+	// inspect; Validate is the gate that catches misconfiguration only
+	// when GC is actually turned on. See docs/GC_DESIGN.md §4.
+	cfg.GC.ApplyDefaults()
+	if err := cfg.GC.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid gc config in %s: %w", path, err)
 	}
 	return cfg, nil
 }

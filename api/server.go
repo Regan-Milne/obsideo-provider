@@ -6,29 +6,33 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/Regan-Milne/obsideo-provider/pausectl"
-	"github.com/Regan-Milne/obsideo-provider/store"
-	"github.com/Regan-Milne/obsideo-provider/tokens"
+	"github.com/obsideo/obsideo-provider/pausectl"
+	"github.com/obsideo/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/tokens"
 )
 
 // Server is the provider HTTP server.
 type Server struct {
-	store    *store.Store
-	verifier *tokens.Verifier
-	nonces   *nonceCache
-	pause    *pausectl.State // nil when no cold key configured
+	store      *store.Store
+	verifier   *tokens.Verifier
+	nonces     *nonceCache
+	pause      *pausectl.State // nil when no cold key configured
+	providerID string          // echoed in challenge responses; "" disables strict provider_id checks
 }
 
 // New creates a Server. Pass nil for pause to disable the circuit
 // breaker (POST /control/pause will 503 and IsPaused always returns
 // false) — this matches pre-Phase-1 deployments that have not yet
-// configured a cold-key pubkey.
-func New(st *store.Store, v *tokens.Verifier, pause *pausectl.State) *Server {
+// configured a cold-key pubkey. providerID is echoed in challenge
+// responses and used to reject mis-targeted challenges; pass "" to
+// skip the targeting check (test/local-dev shape).
+func New(st *store.Store, v *tokens.Verifier, pause *pausectl.State, providerID string) *Server {
 	return &Server{
-		store:    st,
-		verifier: v,
-		nonces:   newNonceCache(deleteCommandNonceTTL),
-		pause:    pause,
+		store:      st,
+		verifier:   v,
+		nonces:     newNonceCache(deleteCommandNonceTTL),
+		pause:      pause,
+		providerID: providerID,
 	}
 }
 

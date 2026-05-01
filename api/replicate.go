@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/store"
 )
 
 // replicateRequest matches the body the coordinator's Replicator.ReplicateTo

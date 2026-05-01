@@ -46,10 +46,17 @@ type Ownership struct {
 // /v1/provider/roots/status endpoint. Matches the wire shape on the
 // coord side (api.RootStatus). Stored in the provider's local coverage
 // cache alongside tracking state the provider owns.
+//
+// Two orthogonal signals: Status answers serveability (covered for
+// paid + testdrive + enterprise when active+unexpired). Contracted
+// answers payment ("provider being paid right now?" — paid + active +
+// ExpiresAt > now only). GC consumes Contracted; existing refresher
+// and challenge code continue to consume Status.
 type CoverageAnswer struct {
-	Status string `json:"status"`           // "covered" | "uncovered" | "orphaned"
-	Until  string `json:"until,omitempty"`  // RFC 3339 UTC, present only for paid-covered
-	Reason string `json:"reason,omitempty"` // diagnostic enum from coord
+	Status     string `json:"status"`           // "covered" | "uncovered" | "orphaned"
+	Contracted bool   `json:"contracted"`       // paid + active + ExpiresAt > now
+	Until      string `json:"until,omitempty"`  // RFC 3339 UTC, present only for paid-covered
+	Reason     string `json:"reason,omitempty"` // diagnostic enum from coord
 }
 
 // Coverage is the per-merkle-root cached answer plus the local tracking
@@ -57,12 +64,25 @@ type CoverageAnswer struct {
 // docs/retention_authority_design.md §4.2, §6.2. Mutable on refresh,
 // unlike the write-once Ownership record; stored as
 // {data_dir}/coverage/{merkle_hex}.json.
+//
+// Two transition markers, one per signal:
+//
+//   - FirstSeenUncovered tracks the first refresh that observed
+//     Status != covered. Existing refresher / challenge code uses this.
+//
+//   - FirstSeenNonContracted tracks the first refresh that observed
+//     Contracted == false. GC's retention timer is anchored here. The
+//     two timers are independent because the two signals are
+//     independent: testdrive flips Contracted false without ever
+//     flipping Status uncovered, so the GC timer needs its own anchor.
 type Coverage struct {
-	Status             string     `json:"status"`
-	Until              string     `json:"until,omitempty"`
-	Reason             string     `json:"reason,omitempty"`
-	RefreshedAt        time.Time  `json:"refreshed_at"`
-	FirstSeenUncovered *time.Time `json:"first_seen_uncovered,omitempty"`
+	Status                 string     `json:"status"`
+	Contracted             bool       `json:"contracted"`
+	Until                  string     `json:"until,omitempty"`
+	Reason                 string     `json:"reason,omitempty"`
+	RefreshedAt            time.Time  `json:"refreshed_at"`
+	FirstSeenUncovered     *time.Time `json:"first_seen_uncovered,omitempty"`
+	FirstSeenNonContracted *time.Time `json:"first_seen_non_contracted,omitempty"`
 }
 
 // Coverage status enum values. Duplicated from coord/api/coverage.go to
@@ -179,6 +199,28 @@ func (s *Store) Delete(merkleHex string) error {
 	return nil
 }
 
+// DeleteIndexAndOwnership removes the index file and any ownership
+// record for merkleHex, leaving the object file (if any) untouched.
+// Used by the GC package after it has unlinked the object from the
+// quarantine tree: the bytes are gone, but the index/ownership records
+// would linger and cause stale challenge metadata or confused
+// downstream readers. Returns nil if the records do not exist.
+//
+// Mirrors Delete's behavior re: the 0o444 ownership-mode dance —
+// Windows treats read-only files as undeletable, so chmod first then
+// remove. Coverage cleanup is the caller's responsibility (GC issues
+// DeleteCoverage as a separate call so the coverage record can be
+// kept around if the design ever changes).
+func (s *Store) DeleteIndexAndOwnership(merkleHex string) error {
+	_ = os.Remove(s.idxPath(merkleHex))
+	ownPath := s.ownPath(merkleHex)
+	if _, err := os.Stat(ownPath); err == nil {
+		_ = os.Chmod(ownPath, 0o644)
+		_ = os.Remove(ownPath)
+	}
+	return nil
+}
+
 // PutOwnership records the per-merkle-root ownership bundle exactly once.
 // Fails with ErrOwnershipExists if an ownership file already exists for
 // the given merkle root; this is the write-once-immutable invariant from
@@ -277,6 +319,7 @@ func (s *Store) UpdateCoverage(merkleHex string, answer CoverageAnswer, now time
 
 	next := Coverage{
 		Status:      answer.Status,
+		Contracted:  answer.Contracted,
 		Until:       answer.Until,
 		Reason:      answer.Reason,
 		RefreshedAt: now,
@@ -296,6 +339,23 @@ func (s *Store) UpdateCoverage(merkleHex string, answer CoverageAnswer, now time
 		} else {
 			t := now
 			next.FirstSeenUncovered = &t
+		}
+	}
+
+	// Independent transition marker for GC's retention timer. Tracks
+	// when Contracted first flipped from true to false, regardless of
+	// what Status is doing. Testdrive accounts flip Contracted false
+	// without their Status ever becoming uncovered, so this anchor has
+	// to be tracked separately from FirstSeenUncovered.
+	if answer.Contracted {
+		next.FirstSeenNonContracted = nil
+	} else {
+		if prior != nil && prior.FirstSeenNonContracted != nil {
+			preserved := *prior.FirstSeenNonContracted
+			next.FirstSeenNonContracted = &preserved
+		} else {
+			t := now
+			next.FirstSeenNonContracted = &t
 		}
 	}
 
@@ -437,4 +497,18 @@ func (s *Store) StreamTo(merkleHex string, w io.Writer) error {
 	defer f.Close()
 	_, err = io.Copy(w, f)
 	return err
+}
+
+// OpenObject returns a seekable handle to the raw bytes for merkleHex.
+// Caller owns the close. Used by the challenge handler to read the
+// challenged chunk at offset without loading the whole object into memory.
+func (s *Store) OpenObject(merkleHex string) (*os.File, error) {
+	f, err := os.Open(s.objPath(merkleHex))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return f, nil
 }

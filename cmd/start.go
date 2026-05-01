@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/api"
-	"github.com/Regan-Milne/obsideo-provider/config"
-	"github.com/Regan-Milne/obsideo-provider/coverage"
-	"github.com/Regan-Milne/obsideo-provider/pausectl"
-	"github.com/Regan-Milne/obsideo-provider/store"
-	"github.com/Regan-Milne/obsideo-provider/tokens"
+	"github.com/obsideo/obsideo-provider/api"
+	"github.com/obsideo/obsideo-provider/config"
+	"github.com/obsideo/obsideo-provider/coverage"
+	"github.com/obsideo/obsideo-provider/gc"
+	"github.com/obsideo/obsideo-provider/pausectl"
+	"github.com/obsideo/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/tokens"
 )
 
 // Start loads config, initialises storage, and runs the HTTP server.
@@ -56,7 +57,7 @@ func Start(cfgPath string) error {
 			cur.Signal.SequenceNumber, cur.Signal.ExpiresAt)
 	}
 
-	srv := api.New(st, v, pauseState)
+	srv := api.New(st, v, pauseState, cfg.ProviderID)
 
 	// Heartbeat loop: keep coord's LastHeartbeat fresh so placement
 	// filter doesn't reject us as stale. Only starts if both
@@ -88,6 +89,43 @@ func Start(cfgPath string) error {
 			// now (not plumbed here — existing provider-clean runs until
 			// killed).
 			go refresher.Start(context.Background())
+		}
+	}
+
+	// Provider-side garbage collection per docs/GC_DESIGN.md. Default
+	// off; opt-in via gc.enabled. Reuses the existing coverage cache
+	// (store.Store) for candidate discovery and the existing
+	// coverage.Client for per-merkle live rechecks. Recheck-before-delete
+	// is unconditional in production — the rechecker is wired from the
+	// real coverage.Client here; tests inject a fake through SweeperOpts.
+	if cfg.GC.Enabled {
+		switch {
+		case cfg.Coordinator.URL == "" || cfg.Coordinator.ProviderAPIKey == "":
+			log.Printf("gc: enabled in config but coordinator.url or provider_api_key is empty; sweeper disabled")
+		default:
+			gcQuarantine, err := gc.NewQuarantine(cfg.Data.Path)
+			if err != nil {
+				return fmt.Errorf("init gc quarantine: %w", err)
+			}
+			gcHTTPClient := &http.Client{
+				Timeout: time.Duration(cfg.Coverage.RequestTimeoutS) * time.Second,
+			}
+			gcRechecker := gc.CoverageRecheckerFromClient(
+				gc.DefaultClient(cfg.Coordinator.URL, cfg.Coordinator.ProviderAPIKey, gcHTTPClient),
+			)
+			sweeper, err := gc.NewSweeper(gc.SweeperOpts{
+				Config:     cfg.GC,
+				Coverage:   st,
+				Quarantine: gcQuarantine,
+				Rechecker:  gcRechecker,
+				Storage:    st,
+			})
+			if err != nil {
+				return fmt.Errorf("init gc sweeper: %w", err)
+			}
+			// Lifetime mirrors the heartbeat and refresher loops: ctx
+			// scoped to process lifetime; shutdown is signal-driven.
+			go sweeper.Start(context.Background())
 		}
 	}
 

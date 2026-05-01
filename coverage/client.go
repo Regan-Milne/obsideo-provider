@@ -30,10 +30,18 @@ type Request struct {
 
 // RootStatus matches the per-root value in the coord response. Kept
 // aligned with api.RootStatus byte-for-byte.
+//
+// Two orthogonal signals: Status answers "is this account in a state
+// to serve / accept reads?" (covered for paid + testdrive + enterprise
+// when active+unexpired). Contracted answers "is the provider being
+// paid for this right now?" (paid + active + ExpiresAt > now only).
+// GC consumes Contracted; the existing refresher and challenge code
+// continue to consume Status.
 type RootStatus struct {
-	Status string `json:"status"`
-	Until  string `json:"until,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Status     string `json:"status"`
+	Contracted bool   `json:"contracted"`
+	Until      string `json:"until,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // Response is the decoded coord response: a map keyed by merkle root hex.

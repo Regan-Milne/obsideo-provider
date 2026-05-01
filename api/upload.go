@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/Regan-Milne/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/store"
 )
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {

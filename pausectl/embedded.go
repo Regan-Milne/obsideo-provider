@@ -5,7 +5,7 @@ import "crypto/ed25519"
 // coldKeyPubkey is the retention-authority cold-key public key baked
 // into this binary at build time. Injected via the Go linker:
 //
-//	go build -ldflags "-X 'github.com/Regan-Milne/obsideo-provider/pausectl.coldKeyPubkey=obk_sig_<43 b64url>'"
+//	go build -ldflags "-X 'github.com/obsideo/obsideo-provider/pausectl.coldKeyPubkey=obk_sig_<43 b64url>'"
 //
 // Rationale for build-time injection rather than runtime config (design
 // §4.4): the circuit-breaker verification key must not be rotatable by

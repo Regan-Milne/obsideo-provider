@@ -1,4 +1,4 @@
-# obsideo-provider configuration example.
+# provider-clean configuration example.
 # Copy to config.yaml and edit before running.
 
 provider_id: "my-provider-1"   # human-readable label; not used for auth

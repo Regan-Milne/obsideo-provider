@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/store"
-	"github.com/Regan-Milne/obsideo-provider/tokens"
+	"github.com/obsideo/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/tokens"
 )
 
 // D1 tests: verify the provider-clean upload handler writes the ownership
@@ -48,7 +48,7 @@ func newTestServerWithVerifier(t *testing.T) (*Server, ed25519.PrivateKey) {
 		t.Fatalf("store.New: %v", err)
 	}
 	v := tokens.NewVerifierForTesting(pub)
-	return New(st, v, nil), priv
+	return New(st, v, nil, ""), priv
 }
 
 func uploadTo(t *testing.T, srv *Server, merkle, token string, body []byte) *httptest.ResponseRecorder {

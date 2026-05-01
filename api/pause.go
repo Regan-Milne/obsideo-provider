@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/pausectl"
+	"github.com/obsideo/obsideo-provider/pausectl"
 )
 
 // Circuit-breaker handlers per docs/retention_authority_design.md §4.4

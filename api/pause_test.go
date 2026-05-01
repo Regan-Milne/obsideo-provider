@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Regan-Milne/obsideo-provider/pausectl"
-	"github.com/Regan-Milne/obsideo-provider/store"
+	"github.com/obsideo/obsideo-provider/pausectl"
+	"github.com/obsideo/obsideo-provider/store"
 )
 
 // Tests for POST /control/pause and GET /control/pause (D5). Spec:
@@ -44,7 +44,7 @@ func newPauseAPIEnv(t *testing.T) *pauseAPIEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, nil, state)
+	srv := New(st, nil, state, "")
 	return &pauseAPIEnv{srv: srv, coldPri: coldPri}
 }
 
@@ -126,7 +126,7 @@ func TestHandlePauseSignal_NotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, nil, state)
+	srv := New(st, nil, state, "")
 
 	// Signature doesn't matter — should 503 before touching it.
 	rec := postPause(t, srv, pausectl.Envelope{Payload: "{}", Signature: "x"})
@@ -140,7 +140,7 @@ func TestHandlePauseSignal_NilPauseState(t *testing.T) {
 	// old two-arg New()). The handler must 503 without panicking.
 	dir := t.TempDir()
 	st, _ := store.New(filepath.Join(dir, "provider"))
-	srv := New(st, nil, nil)
+	srv := New(st, nil, nil, "")
 
 	rec := postPause(t, srv, pausectl.Envelope{Payload: "{}", Signature: "x"})
 	if rec.Code != http.StatusServiceUnavailable {
@@ -270,7 +270,7 @@ func TestHandlePauseStatus(t *testing.T) {
 func TestHandlePauseStatus_Unconfigured(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := store.New(filepath.Join(dir, "provider"))
-	srv := New(st, nil, nil)
+	srv := New(st, nil, nil, "")
 
 	rec := getPause(t, srv)
 	if rec.Code != http.StatusOK {
