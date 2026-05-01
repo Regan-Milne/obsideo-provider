@@ -102,6 +102,7 @@ type Store struct {
 	indexDir     string
 	ownershipDir string
 	coverageDir  string
+	stagingDir   string
 }
 
 // New creates a Store rooted at dataDir, creating subdirectories if needed.
@@ -110,7 +111,8 @@ func New(dataDir string) (*Store, error) {
 	idxDir := filepath.Join(dataDir, "index")
 	ownDir := filepath.Join(dataDir, "ownership")
 	covDir := filepath.Join(dataDir, "coverage")
-	for _, d := range []string{objDir, idxDir, ownDir, covDir} {
+	stgDir := filepath.Join(dataDir, "staging")
+	for _, d := range []string{objDir, idxDir, ownDir, covDir, stgDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, fmt.Errorf("create store dir %s: %w", d, err)
 		}
@@ -120,6 +122,7 @@ func New(dataDir string) (*Store, error) {
 		indexDir:     idxDir,
 		ownershipDir: ownDir,
 		coverageDir:  covDir,
+		stagingDir:   stgDir,
 	}, nil
 }
 
@@ -511,4 +514,34 @@ func (s *Store) OpenObject(merkleHex string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// StagingDirPath returns the per-merkle staging directory used by the
+// chunked-upload handlers. Caller is expected to MkdirAll it before
+// writing the first chunk.
+func (s *Store) StagingDirPath(merkleHex string) string {
+	return filepath.Join(s.stagingDir, merkleHex)
+}
+
+// StagingChunkPath returns the path to the Nth transport chunk in the
+// per-merkle staging directory.
+func (s *Store) StagingChunkPath(merkleHex string, index int) string {
+	return filepath.Join(s.StagingDirPath(merkleHex), fmt.Sprintf("chunk_%05d", index))
+}
+
+// StagingMetaPath returns the path to the staging meta file (which
+// records the total chunk count for this upload).
+func (s *Store) StagingMetaPath(merkleHex string) string {
+	return filepath.Join(s.StagingDirPath(merkleHex), "meta")
+}
+
+// RemoveStaging deletes the staging directory for merkleHex. Called by
+// the finalize handler after the assembled bytes have landed via Put.
+// No-op if the directory does not exist.
+func (s *Store) RemoveStaging(merkleHex string) error {
+	err := os.RemoveAll(s.StagingDirPath(merkleHex))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

@@ -48,6 +48,12 @@ func (s *Server) Handler() http.Handler {
 
 	// Authenticated (coordinator-issued JWT required).
 	r.Post("/upload/{merkle}", s.handleUpload)
+	// Chunked upload (used by SDK for files >10 MB). Ported from
+	// provider/api/chunked.go; same wire protocol the SDK has been using
+	// in production since 2026-04-06 (legacy commit dd22176).
+	r.Post("/upload/{merkle}/chunk", s.handleUploadChunk)
+	r.Post("/upload/{merkle}/finalize", s.handleUploadFinalize)
+	r.Get("/upload/{merkle}/status", s.handleUploadStatus)
 	r.Get("/download/{merkle}", s.handleDownload)
 
 	// User-signed delete (retention-authority Phase 1). No coord token
