@@ -35,6 +35,18 @@ type Config struct {
 	// type so an omitted YAML key reads as nil → defaults to true; an
 	// explicit `false` is preserved.
 	AcceptUncontractedData *bool `yaml:"accept_uncontracted_data,omitempty"`
+
+	// NobleWalletAddress is the operator's Noble (Cosmos chain) bech32
+	// address where coord sends USDC payouts. Sent in every heartbeat
+	// so coord can keep the operator's payout target current without
+	// admin intervention — closes the §2 known-regression where the
+	// pre-2026-05-02 heartbeat dropped this field entirely and operators
+	// had to ask Reg to PATCH it via /internal/providers/{id}/noble-address.
+	//
+	// Format: "noble1..." (Cosmos bech32). Empty value = don't send the
+	// field in heartbeat (preserves whatever coord already has on file;
+	// admins can still override via the PATCH endpoint).
+	NobleWalletAddress string `yaml:"noble_wallet_address,omitempty"`
 }
 
 // AcceptsUncontractedData returns the effective gate value, applying the

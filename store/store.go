@@ -545,3 +545,118 @@ func (s *Store) RemoveStaging(merkleHex string) error {
 	}
 	return nil
 }
+
+// UsedBytes returns the total size in bytes of every file under the
+// objects/ directory. Used by the heartbeat to report ground-truth
+// disk usage to coord — the previous heartbeat hardcoded
+// `used_bytes: 0` (see cmd/heartbeat.go pre-2026-05-02), which made
+// coord's per-provider disk-pressure tracking and operator-console
+// usage display permanently wrong. Walks the directory once per call;
+// caller throttles by calling it from the heartbeat tick (~30s
+// cadence).
+//
+// Best-effort: if a file is removed mid-walk (concurrent delete) it's
+// silently skipped. Returns the sum and a non-nil error only when the
+// objects/ directory itself can't be opened.
+func (s *Store) UsedBytes() (int64, error) {
+	var total int64
+	err := filepath.Walk(s.objDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			// File-level read errors (concurrent delete, transient I/O)
+			// shouldn't fail the whole walk. The heartbeat would rather
+			// report a slightly-stale total than nothing.
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// Match List(): only count hex-named files (real objects).
+		// Skips the .tmp-* atomic-write intermediates and any junk.
+		if isHexName(info.Name()) {
+			total += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("walk objects: %w", err)
+	}
+	return total, nil
+}
+
+// DiskFreeBytes returns the actual filesystem free space at the data
+// directory, queried via the OS (statfs on unix, GetDiskFreeSpaceEx
+// on windows). Independent of the operator's declared CapacityBytes
+// — answers "what's actually writable RIGHT NOW," which is the number
+// the placement layer needs to avoid the Yala-class case where
+// declared capacity and writable space drift apart (orphan staging
+// cruft, shared filesystem with other workloads, etc.).
+//
+// Implementation in store_disk_unix.go / store_disk_windows.go via
+// build tags. Returns an error if the underlying syscall fails;
+// caller (heartbeat tick) treats that as "don't include the field"
+// rather than failing the heartbeat outright.
+func (s *Store) DiskFreeBytes() (int64, error) {
+	return diskFreeAt(s.objDir)
+}
+
+// SweepStaleStaging walks the staging/ directory and removes entries
+// whose mtime is older than maxAge. Closes the orphan-staging-cruft
+// loop that's the most likely cause of operators reporting
+// "declared X capacity but full at Y < X" (see Yala 2026-05-02 —
+// failed test uploads left ~95 MB of orphan staging per attempt;
+// across multiple runs filled an 8 GB disk). Returns the count of
+// staging dirs reclaimed and the first error encountered (continues
+// past per-entry errors so one bad dir doesn't block the rest).
+//
+// Caller schedules this from a background ticker (e.g. once per
+// hour) in cmd/start.go. maxAge of 1h matches the chunked-upload
+// session timeout — anything older than that is genuinely orphaned.
+//
+// Idempotent: empty staging dir → returns (0, nil). Missing staging
+// dir → returns (0, nil) without an error.
+func (s *Store) SweepStaleStaging(maxAge time.Duration) (int, error) {
+	entries, err := os.ReadDir(s.stagingDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read staging dir: %w", err)
+	}
+	cutoff := time.Now().Add(-maxAge)
+	cleaned := 0
+	var firstErr error
+	for _, e := range entries {
+		// Staging entries are merkle-named directories; skip anything else.
+		if !e.IsDir() {
+			continue
+		}
+		if !isHexName(e.Name()) {
+			continue
+		}
+		path := filepath.Join(s.stagingDir, e.Name())
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		cleaned++
+	}
+	return cleaned, firstErr
+}

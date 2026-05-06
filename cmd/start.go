@@ -17,7 +17,10 @@ import (
 )
 
 // Start loads config, initialises storage, and runs the HTTP server.
-func Start(cfgPath string) error {
+// `version` is the provider binary's version string (e.g. "provider-v1-1");
+// it's threaded into the heartbeat payload so the coordinator can surface
+// fleet-wide version state via /internal/providers.
+func Start(cfgPath, version string) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -63,8 +66,12 @@ func Start(cfgPath string) error {
 	// filter doesn't reject us as stale. Only starts if both
 	// provider_id and coordinator.url are configured. Runs for the
 	// process lifetime; errors are logged and retried each interval.
+	// Per-tick payload includes ground-truth used_bytes/disk_free
+	// from the store, plus the operator's noble wallet address from
+	// config (sent only when non-empty so a fresh-installed operator
+	// doesn't blank coord's existing record).
 	if cfg.ProviderID != "" && cfg.Coordinator.URL != "" {
-		go runHeartbeatLoop(context.Background(), cfg.Coordinator.URL, cfg.ProviderID)
+		go runHeartbeatLoop(context.Background(), cfg.Coordinator.URL, cfg.ProviderID, st, cfg.NobleWalletAddress, version)
 	} else {
 		log.Printf("heartbeat: provider_id or coordinator.url empty; loop disabled (provider will go stale)")
 	}
@@ -128,6 +135,17 @@ func Start(cfgPath string) error {
 			go sweeper.Start(context.Background())
 		}
 	}
+
+	// Staging-cruft sweeper: prune chunked-upload staging dirs older
+	// than maxAge once per hour. Closes the orphan-staging loop that
+	// was the most likely cause of Yala 2026-05-02 hitting "no space
+	// left on device" with declared 8 GB of capacity but only 3 GB
+	// of tracked stored data — failed chunked uploads leave ~95 MB
+	// per attempt in staging, untracked. 1h matches the chunked-
+	// upload session timeout (anything older is genuinely orphaned).
+	// Independent of cfg.GC.Enabled because this is local hygiene,
+	// not retention-authority policy.
+	go runStagingSweeper(context.Background(), st)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	httpSrv := &http.Server{
