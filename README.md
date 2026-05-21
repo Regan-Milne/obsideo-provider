@@ -11,37 +11,28 @@ This repository is the operator-facing implementation.
 
 **Alpha.** See [Known limitations](#known-limitations) before deploying.
 
-## Upgrading from v2-2026-04-22-streaming to v2-2026-04-23-retention-auth
+## Upgrading to provider-v1-1
 
-New binary, new on-disk format. Point it at a fresh data directory
-and leave the old directory alone. You can delete the old folder
-later at your convenience.
+If you are running any older release of this binary, the upgrade is a
+straightforward binary swap. The on-disk data format is unchanged.
 
-1. Stop the legacy service.
-2. Install `obsideo-provider` alongside the old `datafarmer` binary.
-3. Create a fresh data directory (convention: `/var/lib/obsideo-provider/data-v2`).
-4. In `config.yaml`, set `data.path` to the new directory, and add:
+1. Stop your provider service.
+2. Backup your current binary (e.g. rename to `.pre-v1-1`).
+3. Download the new binary from the
+   [provider-v1-1 release](https://github.com/Regan-Milne/obsideo-provider/releases/tag/provider-v1-1)
+   and put it in place of the old one.
+4. Verify version: `./obsideo-provider version` should print `provider-v1-1`.
+5. Restart the service. Look for `heartbeat: first success` in the logs
+   within ~30 seconds.
 
-    ```yaml
-    coordinator:
-      url: "https://coordinator.obsideo.io"
-      provider_api_key: "prv_..."   # admin DMs this to you
-    coverage:
-      enabled: true
-    ```
+The coordinator's `/internal/providers` view populates the `version`
+field on your next heartbeat. Your `provider_id`, API key, Noble
+payout address, capacity, score, and placement record live on the
+coordinator and survive the upgrade. Your local data directory is
+untouched.
 
-5. Update the systemd `ExecStart=` to the new binary path.
-6. Start. Look for `heartbeat: first success` within ~30 seconds.
-
-If the new binary misbehaves, stop it, flip `ExecStart=` and
-`data.path` back to the old values, restart. The legacy binary starts
-against its untouched data dir.
-
-Your `provider_id`, API key, Noble payout address, capacity, score,
-and placement record live on the coordinator and survive the upgrade.
-
-Full walkthrough, checksums, and rollback:
-[v2-2026-04-23-retention-auth release notes](https://github.com/Regan-Milne/obsideo-provider/releases/tag/v2-2026-04-23-retention-auth).
+Full release notes, checksums, and what is bundled:
+[provider-v1-1 release notes](https://github.com/Regan-Milne/obsideo-provider/releases/tag/provider-v1-1).
 
 ## What this is
 
@@ -51,7 +42,7 @@ customer data you verifiably retain. All data is encrypted on the
 customer's machine before it reaches your disk — providers never see
 plaintext.
 
-Key properties for the v2-2026-04-23-retention-auth release onward:
+Key properties:
 
 - **Flat-file storage.** Each object is written as
   `{data_dir}/objects/{merkle_hex}` (raw ciphertext) plus
@@ -75,17 +66,16 @@ Key properties for the v2-2026-04-23-retention-auth release onward:
 ## Install — native Linux
 
 ```bash
-# Download the pre-built binary + bundle from the latest release:
-# https://github.com/Regan-Milne/obsideo-provider/releases
+# Download the latest binary + checksums:
+# https://github.com/Regan-Milne/obsideo-provider/releases/latest
 
-wget https://github.com/Regan-Milne/obsideo-provider/releases/download/v2-2026-04-23-retention-auth/obsideo-provider-linux-amd64-v2-2026-04-23.zip
-wget https://github.com/Regan-Milne/obsideo-provider/releases/download/v2-2026-04-23-retention-auth/SHA256SUMS
+wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/obsideo-provider-linux-amd64
+wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS
+mv obsideo-provider-linux-amd64 obsideo-provider
+chmod +x obsideo-provider
 
-unzip obsideo-provider-linux-amd64-v2-2026-04-23.zip -d obsideo-provider
-cd obsideo-provider
-
-# Edit config.yaml:
+# Copy config.example.yaml from this repo and edit:
 #   provider_id:                    (from the admin who approved you)
 #   coordinator.provider_api_key:   (delivered per-operator)
 #   data.path:                      (absolute path to your storage dir)
@@ -99,9 +89,10 @@ Expect the first-boot log to include `heartbeat: first success` within
 ## Install — Windows
 
 ```powershell
-# Download the Windows bundle from releases.
-# Unzip; edit config.yaml; run:
-.\obsideo-provider.exe start --config config.yaml
+# Download obsideo-provider-windows-amd64.exe from:
+# https://github.com/Regan-Milne/obsideo-provider/releases/latest
+# Place it alongside your config.yaml, then run:
+.\obsideo-provider-windows-amd64.exe start --config config.yaml
 ```
 
 ## Install — from source
@@ -218,10 +209,10 @@ internal path (`github.com/obsideo/obsideo-provider`) to this repo's
 public path (`github.com/Regan-Milne/obsideo-provider`).
 
 The authoritative source for any release is the tagged commit in
-this repo. Release notes name the tag (e.g.
-`v2-2026-04-23-retention-auth`) and the exact commit. Clone, check
-out the tag, `go build`, and you will produce a binary equivalent to
-the attached release artifact (same SHA-256).
+this repo. Release notes name the tag (e.g. `provider-v1-1`) and the
+exact commit. Clone, check out the tag, `go build`, and you will
+produce a binary equivalent to the attached release artifact (same
+SHA-256).
 
 Issues + discussion: file on this repo's issue tracker.
 
