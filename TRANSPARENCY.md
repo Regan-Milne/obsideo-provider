@@ -126,7 +126,8 @@ Configurable via `data.path` in config.yaml. On first run the binary creates:
 ## Exposed endpoints
 
 The provider listens on one HTTP port (default **3334**). TLS is terminated
-upstream by Tailscale Funnel or whatever ingress the operator chose; the
+upstream by whatever ingress the operator chose (a reverse proxy such as
+Caddy or nginx on a direct public endpoint is recommended); the
 provider itself speaks plain HTTP.
 
 | Endpoint | Auth | Purpose |

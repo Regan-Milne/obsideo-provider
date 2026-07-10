@@ -109,8 +109,8 @@ Go 1.22+ required. Module path is `github.com/Regan-Milne/obsideo-provider`.
 ## Docker
 
 Docker infrastructure is **not included in this release.** The legacy
-Docker image (the `datafarmer` binary, Tailscale auto-funnel setup,
-env-var-driven registration) is incompatible with the new binary's
+Docker image (the `datafarmer` binary, relay-tunnel auto-ingress —
+since deprecated network-wide — and env-var-driven registration) is incompatible with the new binary's
 file-based config. A port to the new binary is tracked as a follow-up
 release.
 
@@ -136,8 +136,11 @@ In the meantime, Docker-using operators have three options:
    CMD ["/app/obsideo-provider", "start", "--config", "/app/config.yaml"]
    ```
 
-   You manage Tailscale Funnel (or whatever public ingress you use)
-   in a sibling container or on the host, and mount a persistent
+   You manage your public ingress in a sibling container or on the
+   host — use a direct endpoint (port-forward 443 with Let's Encrypt,
+   or a routable public IP). Avoid relay tunnels (Tailscale Funnel,
+   quick tunnels): they throttle bulk transfer and your node will
+   underperform on placement and earnings. Mount a persistent
    volume at `/app/data` so `data.path: /app/data` in `config.yaml`
    is backed by your disk.
 

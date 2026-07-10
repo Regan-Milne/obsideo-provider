@@ -28,7 +28,7 @@ build, configure, start, register with a coordinator, and verify the full storag
 - **A reachable address** — the coordinator must be able to make outbound HTTP(S) requests to your provider at registration time and on every challenge cycle (every 4 hours)
   - For local/dev: `http://127.0.0.1:3334` works
   - For production: a public HTTPS URL (e.g. `https://storage.example.com`)
-  - For NAT-restricted setups: a tunnel URL (ngrok, Cloudflare Tunnel, etc.) pointing to your local port
+  - For NAT-restricted setups only (last resort): a tunnel URL pointing to your local port. Relay tunnels throttle bulk transfer — your node will underperform on placement and earnings. A direct public HTTPS endpoint is strongly recommended.
 - **The coordinator's public key** — a PEM file you copy from the coordinator operator
 
 ---
