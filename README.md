@@ -9,6 +9,11 @@ challenge protocol, payment model, threat model — see
 [obsideo-protocol](https://github.com/Regan-Milne/obsideo-protocol).
 This repository is the operator-facing implementation.
 
+Looking to **store** data instead of hosting it? Start at
+[obsideo.io/docs](https://obsideo.io/docs/) (12 GB free tier, self-serve,
+no card). AI agents integrating storage: the executable contract lives at
+[obsideo.io/agents.md](https://obsideo.io/agents.md).
+
 **Alpha.** See [Known limitations](#known-limitations) before deploying.
 
 ## Upgrading to provider-v1-1
