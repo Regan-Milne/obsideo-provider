@@ -66,8 +66,8 @@ func TestEmbeddedColdKey_MalformedFailsHard(t *testing.T) {
 	t.Cleanup(func() { coldKeyPubkey = orig })
 
 	cases := []string{
-		"not_prefixed",                      // missing obk_sig_
-		"obk_sig_tooshort",                  // wrong length
+		"not_prefixed",                        // missing obk_sig_
+		"obk_sig_tooshort",                    // wrong length
 		"obk_sig_" + string(make([]byte, 43)), // 43 bytes of NUL — invalid b64url chars
 	}
 	for _, c := range cases {

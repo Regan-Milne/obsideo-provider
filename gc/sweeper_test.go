@@ -64,9 +64,9 @@ func (f *fakeRechecker) Recheck(_ context.Context, merkle string) (bool, string,
 // their index/ownership removed and which got their coverage cache
 // removed so the test can assert the cleanup happened.
 type fakeStorage struct {
-	mu                     sync.Mutex
-	deletedIndexOwnership  map[string]bool
-	deletedCoverage        map[string]bool
+	mu                    sync.Mutex
+	deletedIndexOwnership map[string]bool
+	deletedCoverage       map[string]bool
 }
 
 func newFakeStorage() *fakeStorage {
@@ -167,9 +167,9 @@ func (f *fixture) putNonContracted(merkle string, firstSeen time.Time) {
 		f.t.Fatalf("store.Put: %v", err)
 	}
 	if err := f.store.UpdateCoverage(merkle, store.CoverageAnswer{
-		Status:     store.CoverageStatusUncovered,
-		Contracted: false,
-		Reason:     "contract_expired",
+		Status:      store.CoverageStatusUncovered,
+		Reclaimable: true,
+		Reason:      "contract_expired",
 	}, firstSeen); err != nil {
 		f.t.Fatalf("UpdateCoverage: %v", err)
 	}
@@ -187,9 +187,9 @@ func (f *fixture) putContracted(merkle string) {
 		f.t.Fatalf("store.Put: %v", err)
 	}
 	if err := f.store.UpdateCoverage(merkle, store.CoverageAnswer{
-		Status:     store.CoverageStatusCovered,
-		Contracted: true,
-		Until:      "2099-01-01T00:00:00Z",
+		Status:      store.CoverageStatusCovered,
+		Reclaimable: false,
+		Until:       "2099-01-01T00:00:00Z",
 	}, f.now); err != nil {
 		f.t.Fatalf("UpdateCoverage: %v", err)
 	}
@@ -221,8 +221,8 @@ func TestScenario1_HappyPath(t *testing.T) {
 
 	s := f.sweeper(Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	})
 
 	// Cycle 1: inside retention window, file stays in objects/.
@@ -285,8 +285,8 @@ func TestScenario2_PaidObjectNeverTouched(t *testing.T) {
 
 	s := f.sweeper(Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	})
 
 	// Run sweeps across multiple times the retention window. Object
@@ -324,8 +324,8 @@ func TestScenario3_MidWindowPay(t *testing.T) {
 
 	s := f.sweeper(Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	})
 
 	// Get the file into quarantine.
@@ -373,8 +373,8 @@ func TestScenario4_CoordBlipDuringRecheck(t *testing.T) {
 
 	s := f.sweeper(Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	})
 
 	// Advance past retention; recheck fails.
@@ -427,8 +427,8 @@ func TestScenario5_StaleCacheSafety(t *testing.T) {
 
 	s := f.sweeper(Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	})
 
 	f.advance(49 * time.Hour)
@@ -458,8 +458,8 @@ func TestScenario6_ManualOperatorIntervention(t *testing.T) {
 
 	s := f.sweeper(Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	})
 
 	// Cycle the file into quarantine.
@@ -515,8 +515,8 @@ func TestSweeper_GaugesReflectState(t *testing.T) {
 
 	s := f.sweeper(Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	})
 
 	// Inside retention: both a1, a2 are marked_uncovered; a3 is covered.
@@ -557,8 +557,8 @@ func TestNewSweeper_RequiresAllSeams(t *testing.T) {
 // validation test. We don't need it to do anything useful.
 type fakeCovReader struct{}
 
-func newFakeCovReader() *fakeCovReader                            { return &fakeCovReader{} }
-func (*fakeCovReader) List() ([]string, error)                    { return nil, nil }
+func newFakeCovReader() *fakeCovReader                             { return &fakeCovReader{} }
+func (*fakeCovReader) List() ([]string, error)                     { return nil, nil }
 func (*fakeCovReader) GetCoverage(string) (*store.Coverage, error) { return nil, store.ErrNotFound }
 func (*fakeCovReader) UpdateCoverage(string, store.CoverageAnswer, time.Time) error {
 	return nil

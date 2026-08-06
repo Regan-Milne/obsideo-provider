@@ -107,11 +107,11 @@ var (
 // are atomic (temp + rename) so a crash mid-Apply cannot leave a partial
 // current.json on disk.
 type State struct {
-	dir       string
-	coldKey   ed25519.PublicKey // nil if no cold key configured → pause signals rejected
-	mu        sync.RWMutex
-	lastSeq   int64        // cached; authoritative value is last_sequence_number on disk
-	active    *StoredPause // nil when no active pause
+	dir     string
+	coldKey ed25519.PublicKey // nil if no cold key configured → pause signals rejected
+	mu      sync.RWMutex
+	lastSeq int64        // cached; authoritative value is last_sequence_number on disk
+	active  *StoredPause // nil when no active pause
 }
 
 const (

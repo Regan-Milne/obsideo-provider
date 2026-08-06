@@ -24,7 +24,7 @@ var Version = "provider-v1-1"
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: provider-clean start [--config <path>] | version")
+		log.Fatal("usage: obsideo-provider start [--config <path>] | version")
 	}
 
 	switch os.Args[1] {

@@ -96,7 +96,14 @@ func (s *heartbeatState) recordFailure() (shouldWarn bool, count int) {
 // at-a-glance which providers need to upgrade. Empty (legacy /
 // dev-build) is omitted; coord treats omission as "unknown version" and
 // flags the provider for upgrade in the admin view.
-func buildPayload(usedBytes, diskFreeBytes int64, nobleWallet, providerVersion string) ([]byte, error) {
+// signingPubKey is the provider's hex Ed25519 signing public key (signed
+// possession proofs). Included when non-empty so coord can replace the
+// placeholder public_key values registered fleet-wide ("unused-v1" etc.)
+// with the real key, following the same omission-preserves pattern as
+// noble_wallet_address. Coord-side consumption is a follow-up; sending it
+// now means the fleet self-reports keys the moment coord learns to persist
+// them.
+func buildPayload(usedBytes, diskFreeBytes int64, nobleWallet, providerVersion, signingPubKey string) ([]byte, error) {
 	body := map[string]any{
 		"used_bytes":      usedBytes,
 		"disk_free_bytes": diskFreeBytes,
@@ -106,6 +113,9 @@ func buildPayload(usedBytes, diskFreeBytes int64, nobleWallet, providerVersion s
 	}
 	if providerVersion != "" {
 		body["provider_version"] = providerVersion
+	}
+	if signingPubKey != "" {
+		body["signing_public_key"] = signingPubKey
 	}
 	return json.Marshal(body)
 }
@@ -135,7 +145,7 @@ func gatherMetrics(s *store.Store) (usedBytes, diskFreeBytes int64, errs []error
 // nobleWallet is the operator's payout address (empty = don't send);
 // providerVersion is the binary version string (set by main; reported
 // every tick so coord knows fleet-wide upgrade state).
-func runHeartbeatLoop(ctx context.Context, coordinatorURL, providerID string, st *store.Store, nobleWallet, providerVersion string) {
+func runHeartbeatLoop(ctx context.Context, coordinatorURL, providerID string, st *store.Store, nobleWallet, providerVersion, signingPubKey string) {
 	endpoint := fmt.Sprintf("%s/internal/providers/%s/heartbeat",
 		coordinatorURL, providerID)
 	client := &http.Client{Timeout: heartbeatTimeout}
@@ -152,13 +162,13 @@ func runHeartbeatLoop(ctx context.Context, coordinatorURL, providerID string, st
 			log.Printf("heartbeat: loop stopping on context cancel")
 			return
 		case <-timer.C:
-			tickHeartbeat(ctx, client, endpoint, st, nobleWallet, providerVersion, state)
+			tickHeartbeat(ctx, client, endpoint, st, nobleWallet, providerVersion, signingPubKey, state)
 			timer.Reset(heartbeatInterval)
 		}
 	}
 }
 
-func tickHeartbeat(ctx context.Context, client *http.Client, endpoint string, st *store.Store, nobleWallet, providerVersion string, state *heartbeatState) {
+func tickHeartbeat(ctx context.Context, client *http.Client, endpoint string, st *store.Store, nobleWallet, providerVersion, signingPubKey string, state *heartbeatState) {
 	usedBytes, diskFreeBytes, metricErrs := gatherMetrics(st)
 	for _, err := range metricErrs {
 		// Per-metric errors are log-only — we still send what we have.
@@ -166,7 +176,7 @@ func tickHeartbeat(ctx context.Context, client *http.Client, endpoint string, st
 		// persistently-broken syscall doesn't flood the logs.
 		log.Printf("heartbeat: metric gather warning: %v", err)
 	}
-	payload, err := buildPayload(usedBytes, diskFreeBytes, nobleWallet, providerVersion)
+	payload, err := buildPayload(usedBytes, diskFreeBytes, nobleWallet, providerVersion, signingPubKey)
 	if err != nil {
 		// json.Marshal of map[string]any with int64 + string values
 		// cannot fail in practice. Log + skip the tick if it ever does.

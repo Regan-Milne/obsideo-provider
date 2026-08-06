@@ -2,9 +2,7 @@ package api
 
 import (
 	"errors"
-	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -45,21 +43,21 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chunkSize := store.DefaultChunkSize
-	if cs := r.URL.Query().Get("chunk_size"); cs != "" {
-		if n, err := strconv.Atoi(cs); err == nil && n > 0 {
-			chunkSize = n
+	// Stream the body to disk while hashing the merkle frontier
+	// incrementally, then verify the computed root against the URL/token
+	// merkle at close. Bounded memory regardless of object size (replaces
+	// the io.ReadAll + full-buffer Put that capped large objects at
+	// RAM ÷ concurrency). The chunk size is frozen at 1 MiB network-wide —
+	// the merkle root is only defined at 1 MiB — so no chunk_size param is
+	// honored here; the index PutStream writes is always 1 MiB.
+	if _, err := s.store.PutStream(merkle, r.Body); err != nil {
+		if errors.Is(err, store.ErrMerkleMismatch) {
+			// Bytes do not hash to the claimed root: a content-addressing
+			// violation, not a server fault. Nothing was stored.
+			writeError(w, http.StatusUnprocessableEntity,
+				"uploaded bytes do not hash to merkle root "+merkle)
+			return
 		}
-	}
-
-	// Read body.
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
-		return
-	}
-
-	if err := s.store.Put(merkle, data, chunkSize); err != nil {
 		writeError(w, http.StatusInternalServerError, "store: "+err.Error())
 		return
 	}

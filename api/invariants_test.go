@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/obsideo/obsideo-provider/coverage"
 	"github.com/obsideo/obsideo-provider/pausectl"
 	"github.com/obsideo/obsideo-provider/store"
@@ -107,11 +108,16 @@ import (
 // Phase-1 coverage-refresh code path never mutates provider-side data,
 // regardless of what the coord responds with. This is the positive form
 // of invariant 1 restricted to the new Phase-1 flow: coverage answers
-// drive cache updates, not deletions. (The legacy
-// DELETE /objects/{merkle} route still exists for backward
-// compatibility, gated off at the coord by GCConfig.CoordInitiatedDelete
-// default false — that is a coord-side invariant tested in the
-// coordinator module.)
+// drive cache updates, not deletions.
+//
+// The legacy DELETE /objects/{merkle} route this comment used to
+// describe as "retained for backward compatibility, gated off at the
+// coord by GCConfig.CoordInitiatedDelete default false" is GONE as of
+// 2026-07-31. The gate was never the protection it was assumed to be:
+// the route required no credential at all, so any host on the internet
+// could call it directly without involving the coordinator or its
+// config. GET /list went with it. See
+// TestInvariant_UnauthenticatedEraseRoutesAbsent below.
 func TestInvariant1_RefresherNeverCallsStoreDelete(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.New(filepath.Join(dir, "provider"))
@@ -421,7 +427,8 @@ func TestInvariant5_PauseCheckerGateHaltsPrune(t *testing.T) {
 func TestInvariant6_OwnershipPubkeysMatchTokenClaims(t *testing.T) {
 	srv, priv := newTestServerWithVerifier(t)
 
-	merkle := strings.Repeat("f", 64)
+	payload := validPayloadBytes()
+	merkle := merkleRootOf(t, payload)
 	claimedPub := "obk_pub_" + strings.Repeat("P", 43)
 	claimedSig := "obk_sig_" + strings.Repeat("S", 43)
 
@@ -437,7 +444,7 @@ func TestInvariant6_OwnershipPubkeysMatchTokenClaims(t *testing.T) {
 	}
 	tok := signTestToken(t, priv, claims)
 
-	rec := uploadTo(t, srv, merkle, tok, validPayloadBytes())
+	rec := uploadTo(t, srv, merkle, tok, payload)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload: code %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -451,5 +458,87 @@ func TestInvariant6_OwnershipPubkeysMatchTokenClaims(t *testing.T) {
 	}
 	if own.OwnerSigPubkey != claimedSig {
 		t.Errorf("OwnerSigPubkey: got %q want %q (invariant 6 violated)", own.OwnerSigPubkey, claimedSig)
+	}
+}
+
+// ---------- Invariant: no unauthenticated erase or enumeration ----------
+
+// TestInvariant_UnauthenticatedEraseRoutesAbsent is the regression guard
+// for the 2026-07-31 finding: DELETE /objects/{merkle} erased any object
+// by merkle root with no credential of any kind, and GET /list returned
+// every root held, also unauthenticated. Chained, they were a complete
+// remote wipe primitive against a fleet on public HTTPS.
+//
+// The test asserts absence at the ROUTER, with no auth material present
+// at all (verifier is nil) — the same position an anonymous caller is
+// in. A 401/403 would not satisfy this test and should not: the routes
+// are meant to be gone, not gated, because neither had a production
+// caller. If a future change re-adds either path, this fails.
+func TestInvariant_UnauthenticatedEraseRoutesAbsent(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "provider"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed a real object so a live erase route would have something to
+	// destroy — this must fail because the route is absent, not because
+	// the root happens not to exist.
+	merkle := strings.Repeat("a", 64)
+	if err := st.Put(merkle, []byte("customer-ciphertext"), store.DefaultChunkSize); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(st, nil, nil, "", true)
+	h := srv.Handler()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"unauthenticated erase", http.MethodDelete, "/objects/" + merkle},
+		{"unauthenticated enumeration", http.MethodGet, "/list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s: got %d, want 404/405 — route must not exist",
+					tc.method, tc.path, rec.Code)
+			}
+		})
+	}
+
+	// The object must still be on disk: proof that the DELETE above was
+	// refused by routing rather than silently succeeding.
+	if _, err := st.Get(merkle); err != nil {
+		t.Fatalf("object destroyed by a route that should not exist: %v", err)
+	}
+
+	// Assert against the route TABLE, not against response codes. A
+	// status check cannot tell "route absent" from "handler declined":
+	// handleDeleteSigned answers 404 for an object with no ownership
+	// record, which is exactly the code an unrouted path returns.
+	routes, ok := h.(chi.Routes)
+	if !ok {
+		t.Fatalf("handler is %T, not chi.Routes — cannot assert route table", h)
+	}
+	registered := map[string]bool{}
+	if err := chi.Walk(routes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		registered[method+" "+route] = true
+		return nil
+	}); err != nil {
+		t.Fatalf("walk routes: %v", err)
+	}
+
+	for _, gone := range []string{"DELETE /objects/{merkle}", "GET /list"} {
+		if registered[gone] {
+			t.Errorf("route %q is registered again — it is an unauthenticated %s primitive and must stay gone",
+				gone, map[bool]string{true: "erase", false: "enumeration"}[strings.HasPrefix(gone, "DELETE")])
+		}
+	}
+	// This change removes unsigned erase; it does not remove erase.
+	if !registered["POST /delete/{merkle}"] {
+		t.Error("POST /delete/{merkle} missing: the signature-gated erase path must survive")
 	}
 }

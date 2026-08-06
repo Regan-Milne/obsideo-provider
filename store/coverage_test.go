@@ -142,10 +142,10 @@ func TestUpdateCoverage_FullCycle_CoveredUncoveredCoveredUncovered(t *testing.T)
 	t3 := t1.Add(3 * 24 * time.Hour)
 	t4 := t1.Add(10 * 24 * time.Hour)
 
-	_ = s.UpdateCoverage(merkle, CoverageAnswer{Status: CoverageStatusUncovered}, t1) // marker = t1
+	_ = s.UpdateCoverage(merkle, CoverageAnswer{Status: CoverageStatusUncovered}, t1)                              // marker = t1
 	_ = s.UpdateCoverage(merkle, CoverageAnswer{Status: CoverageStatusCovered, Until: "2026-06-01T00:00:00Z"}, t2) // marker cleared
 	_ = s.UpdateCoverage(merkle, CoverageAnswer{Status: CoverageStatusCovered, Until: "2026-06-01T00:00:00Z"}, t3) // still covered, still no marker
-	_ = s.UpdateCoverage(merkle, CoverageAnswer{Status: CoverageStatusUncovered, Reason: "contract_expired"}, t4) // marker = t4
+	_ = s.UpdateCoverage(merkle, CoverageAnswer{Status: CoverageStatusUncovered, Reason: "contract_expired"}, t4)  // marker = t4
 
 	got, _ := s.GetCoverage(merkle)
 	if got.FirstSeenUncovered == nil || !got.FirstSeenUncovered.Equal(t4) {

@@ -63,15 +63,15 @@ type deleteCommandPayload struct {
 // customer's Ed25519 signature over the canonical command payload.
 //
 // Ordering of checks is load-bearing:
-//   1. Ownership file present. Absence → 404. No legacy fallback.
-//   2. Request body shape valid (payload and signature strings present).
-//   3. Signature byte-decodes to 64 bytes.
-//   4. Ed25519 verify over payload bytes. Fails → 401.
-//   5. Payload parses as canonical delete command with all four fields.
-//   6. URL `{merkle}` matches `payload.merkle_root`. Mismatch → 400.
-//   7. issued_at within drift window. Outside → 401.
-//   8. Nonce not in replay cache. Replay → 401.
-//   9. Delete the chunks (store.Delete).
+//  1. Ownership file present. Absence → 404. No legacy fallback.
+//  2. Request body shape valid (payload and signature strings present).
+//  3. Signature byte-decodes to 64 bytes.
+//  4. Ed25519 verify over payload bytes. Fails → 401.
+//  5. Payload parses as canonical delete command with all four fields.
+//  6. URL `{merkle}` matches `payload.merkle_root`. Mismatch → 400.
+//  7. issued_at within drift window. Outside → 401.
+//  8. Nonce not in replay cache. Replay → 401.
+//  9. Delete the chunks (store.Delete).
 //
 // Side effect on success: the object file, index, coverage, AND ownership
 // records are all removed. The ownership file going away is load-bearing

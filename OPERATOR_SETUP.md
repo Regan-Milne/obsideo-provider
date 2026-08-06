@@ -27,21 +27,37 @@ build, configure, start, register with a coordinator, and verify the full storag
 - **Go 1.22 or later** — only required to build; the binary has no runtime dependencies
 - **A reachable address** — the coordinator must be able to make outbound HTTP(S) requests to your provider at registration time and on every challenge cycle (every 4 hours)
   - For local/dev: `http://127.0.0.1:3334` works
-  - For production: a public HTTPS URL (e.g. `https://storage.example.com`)
-  - For NAT-restricted setups only (last resort): a tunnel URL pointing to your local port. Relay tunnels throttle bulk transfer — your node will underperform on placement and earnings. A direct public HTTPS endpoint is strongly recommended.
+  - For production: a direct, publicly reachable HTTPS endpoint on port 443 (e.g. `https://storage.example.com`), with TLS terminated at the node or a reverse proxy in front of it. This is a hard requirement for a production node.
+  - Relay tunnels (ngrok, Cloudflare Tunnel, Tailscale Funnel) are not supported for the data path. They throttle bulk transfer, so a tunneled node underperforms on placement and earnings. Use a routable public IP or a port-forward to 443, not a relay.
 - **The coordinator's public key** — a PEM file you copy from the coordinator operator
 
 ---
 
 ## Build
 
+Most operators should take the released binary rather than building:
+
 ```bash
-git clone <repo-url>
-cd provider-clean
-go build -o provider-clean .
+wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/obsideo-provider-linux-amd64
+wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS
+mv obsideo-provider-linux-amd64 obsideo-provider && chmod +x obsideo-provider
+./obsideo-provider version    # should print provider-v1-5-streaming-signed
 ```
 
-This produces a single self-contained binary. No additional dependencies are installed.
+To build from source instead:
+
+```bash
+git clone https://github.com/Regan-Milne/obsideo-provider.git
+cd obsideo-provider
+./build.sh                    # stamps the release version into the binary
+./obsideo-provider version    # should print provider-v1-5-streaming-signed
+```
+
+`build.sh` sets the version ldflag. A plain `go build` also works but
+leaves the version string at its source default, so the node reports an
+older version to the coordinator. Go 1.22+ required; the result is a
+single self-contained binary with no runtime dependencies.
 
 ---
 
@@ -86,13 +102,13 @@ The file must be a PEM block with type `PUBLIC KEY` containing the raw 32-byte E
 ## Starting the provider
 
 ```bash
-./provider-clean start --config config.yaml
+./obsideo-provider start --config config.yaml
 ```
 
 Expected output:
 
 ```
-provider-clean listening on 0.0.0.0:3334
+obsideo-provider listening on 0.0.0.0:3334
 ```
 
 The provider creates `data/objects/` and `data/index/` on first run. Both directories are created automatically; you do not need to create them.
@@ -109,7 +125,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/obsideo-provider
-ExecStart=/opt/obsideo-provider/provider-clean start --config config.yaml
+ExecStart=/opt/obsideo-provider/obsideo-provider start --config config.yaml
 Restart=on-failure
 RestartSec=5
 
@@ -223,7 +239,7 @@ A passing run looks like:
 [confirm     ] OK
 [download    ] PASS — N bytes match exactly
 [delete      ] coordinator mapping removed (204)
-[gc          ] provider <your-id> — merkle root gone from /list
+[gc          ] provider <your-id> — merkle root no longer held by the provider
 [lifecycle   ] PASS — upload, download, delete, and GC all verified
 ```
 
@@ -268,16 +284,18 @@ Before accepting real traffic:
 - [ ] TLS terminates at or before the provider process (reverse proxy, load balancer, or direct TLS)
 - [ ] Data directory is on a persistent, backed-up volume
 - [ ] Provider is running as a non-root user
-- [ ] Provider port (3334) is reachable from the coordinator IP; not exposed to the public internet (internal endpoints are unauthenticated)
+- [ ] `/challenge` and `/replicate` (the only unauthenticated endpoints) are restricted to the coordinator's source address; the authenticated public endpoints stay reachable
 - [ ] `coordinator_pub.pem` matches the live coordinator's public key
 - [ ] Service restarts automatically on crash (systemd `Restart=on-failure` or equivalent)
 - [ ] Disk space monitoring in place — provider does not enforce capacity limits internally
 
 ### Firewall note
 
-The internal endpoints (`/challenge`, `/replicate`, `DELETE /objects/{merkle}`, `/list`) are unauthenticated by design — they are intended to be reachable only from the coordinator's IP. In production, firewall these to the coordinator's source address.
+Only `/challenge` and `/replicate` are unauthenticated coordinator-facing endpoints. In production, firewall them to the coordinator's source address.
 
-The public endpoints (`/upload/{merkle}`, `/download/{merkle}`, `/health`) must be reachable from the coordinator and from clients.
+Every other endpoint is authenticated or public and must stay reachable: `/upload/{merkle}` (and the chunked `/upload/{merkle}/chunk|finalize|status`), `/download/{merkle}`, `/client-challenge`, `POST /delete/{merkle}`, and `/health`. Uploads and downloads carry coordinator-issued tokens, delete carries the customer's Ed25519 signature, and `/client-challenge` carries a token bound to the object, so these do not rely on the firewall for their security.
+
+The earlier unauthenticated `DELETE /objects/{merkle}` and `GET /list` endpoints have been removed. They no longer exist to firewall.
 
 ---
 
@@ -319,7 +337,7 @@ The upload or download token signature does not verify against `coordinator_pub.
 
 The challenge request body could not be parsed. Common causes:
 
-- `expires_at` type mismatch — the coordinator sends it as a Unix timestamp (int64). If you see `cannot unmarshal number into Go struct field ... of type string`, you have an older version of provider-clean. Pull the latest.
+- `expires_at` type mismatch — the coordinator sends it as a Unix timestamp (int64). If you see `cannot unmarshal number into Go struct field ... of type string`, you have an older version of obsideo-provider. Pull the latest.
 - Malformed JSON in the request body — check coordinator logs for what it sent
 
 ### Challenge returns 404
@@ -357,7 +375,7 @@ This is **alpha software** running on a pre-production network.
 
 | Area | Current state |
 |------|---------------|
-| **Auth on internal endpoints** | `/challenge`, `/replicate`, `/list`, `DELETE /objects/{merkle}` are unauthenticated. Rely on firewall to restrict to coordinator IP. |
+| **Auth on internal endpoints** | `/challenge` and `/replicate` are unauthenticated; firewall them to the coordinator IP. The unauthenticated `/list` and `DELETE /objects/{merkle}` endpoints have been removed; erase is now the customer-signed `POST /delete/{merkle}`. |
 | **No TLS built in** | The provider serves plain HTTP. Use a reverse proxy (nginx, caddy) for HTTPS in production. |
 | **Single-node only** | No clustering, no shared storage between provider instances. One process per data directory. |
 | **No capacity enforcement** | The provider does not reject uploads when `capacity_bytes` is exceeded. The coordinator tracks used_bytes but does not enforce server-side. |

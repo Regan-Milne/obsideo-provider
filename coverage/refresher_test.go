@@ -117,18 +117,25 @@ func TestRefresher_RunOnce_PopulatesCoverage(t *testing.T) {
 	}
 }
 
-// ----- Contracted bool: load-bearing field must propagate from wire to cache -----
+// ----- Retained bool: load-bearing field must propagate from wire to cache -----
 
-// Regression: the wire→cache plumbing missed the Contracted field at first
-// ship, so paid-active-unexpired objects came back as Contracted=false in
-// the local cache (Go zero value), making GC see every object as a
-// candidate. This test pins the bool through.
-func TestRefresher_PropagatesContractedBool(t *testing.T) {
-	paidMerkle := strings.Repeat("a", 64)         // contracted=true
-	testdriveMerkle := strings.Repeat("b", 64)    // contracted=false
-	expiredMerkle := strings.Repeat("c", 64)      // contracted=false
+// Regression: the wire→cache plumbing missed the field at first ship, so
+// paid objects came back false in the local cache (Go zero value),
+// making GC see every object as a candidate. This test pins it through.
+//
+// ⚠️ This test previously asserted that a TESTDRIVE root cached as
+// non-contracted with its deletion clock started, and called that
+// correct. It was correct for billing and catastrophic for retention:
+// that is the 2026-07-31 defect, encoded as an expectation. A free-tier
+// customer is entitled to retention. The field GC consumes is now
+// `retained`, and testdrive is retained.
+func TestRefresher_PropagatesReclaimableBool(t *testing.T) {
+	paidMerkle := strings.Repeat("a", 64)      // retained (paid, unexpired)
+	testdriveMerkle := strings.Repeat("b", 64) // retained (free tier is NOT garbage)
+	expiredMerkle := strings.Repeat("c", 64)   // NOT retained (contract lapsed)
 	st := newTempStoreWithObjects(t, paidMerkle, testdriveMerkle, expiredMerkle)
 
+	yes, no := true, false
 	srv, _ := mockCoord(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req Request
@@ -137,11 +144,13 @@ func TestRefresher_PropagatesContractedBool(t *testing.T) {
 		for _, root := range req.Roots {
 			switch root[0] {
 			case 'a':
-				resp[root] = RootStatus{Status: "covered", Contracted: true, Until: "2026-06-01T00:00:00Z"}
+				resp[root] = RootStatus{Status: "covered", Reclaimable: &no, Contracted: true, Until: "2026-06-01T00:00:00Z"}
 			case 'b':
-				resp[root] = RootStatus{Status: "covered", Contracted: false}
+				// The incident shape: covered + retained, but NOT
+				// contracted (free tier generates no revenue).
+				resp[root] = RootStatus{Status: "covered", Reclaimable: &no, Contracted: false}
 			case 'c':
-				resp[root] = RootStatus{Status: "uncovered", Contracted: false, Reason: "contract_expired"}
+				resp[root] = RootStatus{Status: "uncovered", Reclaimable: &yes, Contracted: false, Reason: "contract_expired"}
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -155,24 +164,59 @@ func TestRefresher_PropagatesContractedBool(t *testing.T) {
 	}
 
 	got, err := st.GetCoverage(paidMerkle)
-	if err != nil || got.Status != "covered" || got.Contracted != true {
-		t.Errorf("paid: status=%q contracted=%v err=%v; want covered/true", got.Status, got.Contracted, err)
+	if err != nil || got.Status != "covered" || got.Reclaimable != false {
+		t.Errorf("paid: status=%q reclaimable=%v err=%v; want covered/NOT-reclaimable", got.Status, got.Reclaimable, err)
 	}
-	if got.FirstSeenNonContracted != nil {
-		t.Errorf("paid: FirstSeenNonContracted should be nil for contracted=true root, got %v", got.FirstSeenNonContracted)
+	if got.FirstSeenReclaimable != nil {
+		t.Errorf("paid: FirstSeenReclaimable should be nil, got %v", got.FirstSeenReclaimable)
 	}
 
 	got, err = st.GetCoverage(testdriveMerkle)
-	if err != nil || got.Status != "covered" || got.Contracted != false {
-		t.Errorf("testdrive: status=%q contracted=%v err=%v; want covered/false", got.Status, got.Contracted, err)
+	if err != nil || got.Status != "covered" || got.Reclaimable != false {
+		t.Errorf("testdrive: status=%q reclaimable=%v err=%v; want covered/NOT-reclaimable — a free-tier "+
+			"customer is entitled to retention", got.Status, got.Reclaimable, err)
 	}
-	if got.FirstSeenNonContracted == nil {
-		t.Errorf("testdrive: FirstSeenNonContracted should be set for contracted=false root")
+	if got.FirstSeenReclaimable != nil {
+		t.Errorf("testdrive: deletion clock must NOT start for a retained account; got %v",
+			got.FirstSeenReclaimable)
 	}
 
 	got, err = st.GetCoverage(expiredMerkle)
-	if err != nil || got.Status != "uncovered" || got.Contracted != false {
-		t.Errorf("expired: status=%q contracted=%v err=%v; want uncovered/false", got.Status, got.Contracted, err)
+	if err != nil || got.Status != "uncovered" || got.Reclaimable != true {
+		t.Errorf("expired: status=%q reclaimable=%v err=%v; want uncovered/reclaimable", got.Status, got.Reclaimable, err)
+	}
+	if got.FirstSeenReclaimable == nil {
+		t.Error("expired: deletion clock SHOULD start; GC must not become a no-op")
+	}
+}
+
+// TestRefresher_FallsBackToContractedWhenCoordIsOld pins the mixed-fleet
+// path: an old coordinator omits `retained`, so the cache falls back to
+// `contracted`. A current coordinator populates `contracted` FROM the
+// retention predicate precisely so this fallback is safe.
+func TestRefresher_FallsBackToContractedWhenCoordIsOld(t *testing.T) {
+	m := strings.Repeat("d", 64)
+	st := newTempStoreWithObjects(t, m)
+	srv, _ := mockCoord(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req Request
+		_ = json.Unmarshal(body, &req)
+		resp := Response{}
+		for _, root := range req.Roots {
+			resp[root] = RootStatus{Status: "covered", Contracted: true} // no Reclaimable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer srv.Close()
+
+	r := &Refresher{Store: st, Client: zeroRetryClient(srv, 0), Interval: time.Hour, BatchSize: 500}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	got, err := st.GetCoverage(m)
+	if err != nil || got.Reclaimable != false {
+		t.Errorf("old-coord fallback: reclaimable=%v err=%v; want true from `contracted`", got.Reclaimable, err)
 	}
 }
 

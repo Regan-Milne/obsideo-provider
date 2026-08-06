@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/obsideo/obsideo-provider/identity"
 	"github.com/obsideo/obsideo-provider/store"
 )
 
 const (
 	proofVersionV1        = 2
 	proofVersionV1Replica = 3
+	proofVersionCompact   = 4 // compact proofs: challenge is over a 4096-byte block within the chunk
 )
 
 // auditChallenge is the canonical request shape from the coord challenger.
@@ -26,6 +28,7 @@ type auditChallenge struct {
 	MerkleRoot   string `json:"merkle_root"`
 	ProviderID   string `json:"provider_id,omitempty"`
 	ChunkIndex   int    `json:"chunk_index"`
+	BlockIndex   int    `json:"block_index"` // compact proofs (v4): which 4096-byte block of the chunk; 0 for v1/v2
 	Nonce        string `json:"nonce"`
 	ExpiresAt    int64  `json:"expires_at"`
 	ProofVersion int    `json:"proof_version,omitempty"`
@@ -47,6 +50,15 @@ type auditResponse struct {
 	Nonce           string      `json:"nonce"`
 	Timestamp       int64       `json:"timestamp"`
 	ProofVersion    int         `json:"proof_version"`
+
+	// Signature is the provider's Ed25519 signature (base64 std) over the
+	// canonical proof payload (identity.ProofSigPayload). KeyID tags which
+	// provider key signed. Both omitempty: a provider with no signing
+	// identity emits neither field, and the response is byte-identical to
+	// the pre-signing wire format — the coord verifier ignores unknown
+	// fields, so mixed fleets interoperate. See note_signed_proofs_build_plan.
+	Signature string `json:"signature,omitempty"`
+	KeyID     string `json:"key_id,omitempty"`
 }
 
 type merkleProof struct {
@@ -66,7 +78,15 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "decode body: "+err.Error())
 		return
 	}
+	s.serveChallenge(w, ch)
+}
 
+// serveChallenge is the shared challenge core: validates the challenge,
+// reads the chunk, builds the proof (V1 raw or V4 compact), signs, responds.
+// Called by handleChallenge (coord path, unauthenticated — the coord
+// challenger sends no token; access control is network position) and
+// handleClientChallenge (customer path, token-authenticated + rate-limited).
+func (s *Server) serveChallenge(w http.ResponseWriter, ch auditChallenge) {
 	if ch.ProviderID != "" && s.providerID != "" && ch.ProviderID != s.providerID {
 		writeError(w, http.StatusForbidden, "provider_id mismatch")
 		return
@@ -83,8 +103,8 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid merkle_root hex")
 		return
 	}
-	if ch.ProofVersion != 0 && ch.ProofVersion != proofVersionV1 {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported proof_version %d (only V1 raw is implemented)", ch.ProofVersion))
+	if ch.ProofVersion != 0 && ch.ProofVersion != proofVersionV1 && ch.ProofVersion != proofVersionCompact {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported proof_version %d (only V1 raw and V4 compact are implemented)", ch.ProofVersion))
 		return
 	}
 
@@ -137,6 +157,41 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compact proofs (proof_version 4): the challenge targets a single
+	// 4096-byte BLOCK inside the challenged chunk. Everything above (object
+	// lookup, chunk bounds, chunk read) is shared with V1 raw; only the proof
+	// and the returned bytes differ. The provider holds no seal — it rebuilds
+	// the sub-chunk tree from the chunk bytes here on every challenge.
+	if ch.ProofVersion == proofVersionCompact {
+		blockCount := subChunkBlockCount(len(chunkBuf))
+		if ch.BlockIndex < 0 || ch.BlockIndex >= blockCount {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("block_index %d out of range [0, %d)", ch.BlockIndex, blockCount))
+			return
+		}
+		block, siblings, err := generateSubChunkSiblings(chunkBuf, ch.BlockIndex)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "generate sub-chunk proof: "+err.Error())
+			return
+		}
+		resp := auditResponse{
+			Version:         ch.Version,
+			ChallengeID:     ch.ChallengeID,
+			ProviderID:      s.providerID,
+			MerkleRoot:      ch.MerkleRoot,
+			ChunkIndex:      ch.ChunkIndex,
+			ChunkData:       base64.StdEncoding.EncodeToString(block),
+			MerkleProof:     merkleProof{Siblings: siblings, Index: ch.BlockIndex},
+			TotalChunkCount: idx.TotalChunks,
+			Nonce:           ch.Nonce,
+			Timestamp:       time.Now().Unix(),
+			ProofVersion:    proofVersionCompact,
+		}
+		// Sign over the RAW returned block bytes and the compact block index.
+		s.signAuditResponse(&resp, block, ch.BlockIndex)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	// Build merkle leaves from the precomputed chunk hashes. Each leaf is
 	// sha3-512(chunkHash) per the SDK + coord's wealdtech-compatible tree.
 	leaves := make([][]byte, idx.TotalChunks)
@@ -150,7 +205,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	siblings := computeMerkleProof(leaves, ch.ChunkIndex)
 
-	writeJSON(w, http.StatusOK, auditResponse{
+	resp := auditResponse{
 		Version:         ch.Version,
 		ChallengeID:     ch.ChallengeID,
 		ProviderID:      s.providerID,
@@ -162,5 +217,33 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		Nonce:           ch.Nonce,
 		Timestamp:       time.Now().Unix(),
 		ProofVersion:    proofVersionV1,
-	})
+	}
+	// V1 raw: signature is over the whole returned chunk; block index is 0.
+	s.signAuditResponse(&resp, chunkBuf, 0)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// signAuditResponse attaches the provider's signature + key id to a challenge
+// response when a signer is configured. No-op when s.signer is nil, so
+// unsigned (legacy/dev) providers emit the pre-signing wire format unchanged.
+// The signature is over identity.ProofSigPayload of the RAW returned bytes
+// (chunk for V1, block for compact), binding the response to this exact
+// challenge, chunk/block, and data — a signature cannot be replayed for a
+// different challenge or tampered payload.
+func (s *Server) signAuditResponse(resp *auditResponse, rawBytes []byte, blockIndex int) {
+	if s.signer == nil {
+		return
+	}
+	payload := identity.ProofSigPayload(
+		resp.ProviderID,
+		resp.ChallengeID,
+		resp.Nonce,
+		resp.MerkleRoot,
+		resp.ChunkIndex,
+		blockIndex,
+		resp.ProofVersion,
+		rawBytes,
+	)
+	resp.Signature = base64.StdEncoding.EncodeToString(s.signer.Sign(payload))
+	resp.KeyID = s.signer.KeyID()
 }

@@ -48,15 +48,15 @@ type Ownership struct {
 // cache alongside tracking state the provider owns.
 //
 // Two orthogonal signals: Status answers serveability (covered for
-// paid + testdrive + enterprise when active+unexpired). Contracted
+// paid + testdrive + enterprise when active+unexpired). Reclaimable
 // answers payment ("provider being paid right now?" — paid + active +
-// ExpiresAt > now only). GC consumes Contracted; existing refresher
+// ExpiresAt > now only). GC consumes Reclaimable; existing refresher
 // and challenge code continue to consume Status.
 type CoverageAnswer struct {
-	Status     string `json:"status"`           // "covered" | "uncovered" | "orphaned"
-	Contracted bool   `json:"contracted"`       // paid + active + ExpiresAt > now
-	Until      string `json:"until,omitempty"`  // RFC 3339 UTC, present only for paid-covered
-	Reason     string `json:"reason,omitempty"` // diagnostic enum from coord
+	Status      string `json:"status"`           // "covered" | "uncovered" | "orphaned"
+	Reclaimable bool   `json:"contracted"`       // paid + active + ExpiresAt > now
+	Until       string `json:"until,omitempty"`  // RFC 3339 UTC, present only for paid-covered
+	Reason      string `json:"reason,omitempty"` // diagnostic enum from coord
 }
 
 // Coverage is the per-merkle-root cached answer plus the local tracking
@@ -70,19 +70,19 @@ type CoverageAnswer struct {
 //   - FirstSeenUncovered tracks the first refresh that observed
 //     Status != covered. Existing refresher / challenge code uses this.
 //
-//   - FirstSeenNonContracted tracks the first refresh that observed
-//     Contracted == false. GC's retention timer is anchored here. The
+//   - FirstSeenReclaimable tracks the first refresh that observed
+//     Reclaimable == false. GC's retention timer is anchored here. The
 //     two timers are independent because the two signals are
-//     independent: testdrive flips Contracted false without ever
+//     independent: testdrive flips Reclaimable false without ever
 //     flipping Status uncovered, so the GC timer needs its own anchor.
 type Coverage struct {
-	Status                 string     `json:"status"`
-	Contracted             bool       `json:"contracted"`
-	Until                  string     `json:"until,omitempty"`
-	Reason                 string     `json:"reason,omitempty"`
-	RefreshedAt            time.Time  `json:"refreshed_at"`
-	FirstSeenUncovered     *time.Time `json:"first_seen_uncovered,omitempty"`
-	FirstSeenNonContracted *time.Time `json:"first_seen_non_contracted,omitempty"`
+	Status               string     `json:"status"`
+	Reclaimable          bool       `json:"contracted"`
+	Until                string     `json:"until,omitempty"`
+	Reason               string     `json:"reason,omitempty"`
+	RefreshedAt          time.Time  `json:"refreshed_at"`
+	FirstSeenUncovered   *time.Time `json:"first_seen_uncovered,omitempty"`
+	FirstSeenReclaimable *time.Time `json:"first_seen_non_contracted,omitempty"`
 }
 
 // Coverage status enum values. Duplicated from coord/api/coverage.go to
@@ -322,7 +322,7 @@ func (s *Store) UpdateCoverage(merkleHex string, answer CoverageAnswer, now time
 
 	next := Coverage{
 		Status:      answer.Status,
-		Contracted:  answer.Contracted,
+		Reclaimable: answer.Reclaimable,
 		Until:       answer.Until,
 		Reason:      answer.Reason,
 		RefreshedAt: now,
@@ -346,19 +346,19 @@ func (s *Store) UpdateCoverage(merkleHex string, answer CoverageAnswer, now time
 	}
 
 	// Independent transition marker for GC's retention timer. Tracks
-	// when Contracted first flipped from true to false, regardless of
-	// what Status is doing. Testdrive accounts flip Contracted false
+	// when Reclaimable first flipped from true to false, regardless of
+	// what Status is doing. Testdrive accounts flip Reclaimable false
 	// without their Status ever becoming uncovered, so this anchor has
 	// to be tracked separately from FirstSeenUncovered.
-	if answer.Contracted {
-		next.FirstSeenNonContracted = nil
+	if !answer.Reclaimable {
+		next.FirstSeenReclaimable = nil
 	} else {
-		if prior != nil && prior.FirstSeenNonContracted != nil {
-			preserved := *prior.FirstSeenNonContracted
-			next.FirstSeenNonContracted = &preserved
+		if prior != nil && prior.FirstSeenReclaimable != nil {
+			preserved := *prior.FirstSeenReclaimable
+			next.FirstSeenReclaimable = &preserved
 		} else {
 			t := now
-			next.FirstSeenNonContracted = &t
+			next.FirstSeenReclaimable = &t
 		}
 	}
 

@@ -4,30 +4,14 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-
-	"github.com/go-chi/chi/v5"
 )
 
-func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	merkle := chi.URLParam(r, "merkle")
-	if err := s.store.Delete(merkle); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	roots, err := s.store.List()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"merkle_roots": roots,
-		"count":        len(roots),
-	})
-}
+// handleDelete and handleList used to live here, serving
+// DELETE /objects/{merkle} and GET /list. Both were unauthenticated and
+// both are gone; see the "DELIBERATELY ABSENT" note in server.go for
+// why, and delete.go for the signature-gated erase path that replaces
+// the former. Do not reintroduce an unsigned erase or an unauthenticated
+// enumeration endpoint here.
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

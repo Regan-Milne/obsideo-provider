@@ -25,8 +25,14 @@ import (
 // logged but never fatal — sweeper keeps running on the next tick.
 
 const (
-	stagingMaxAge         = 1 * time.Hour
-	stagingSweepInterval  = 1 * time.Hour
+	stagingMaxAge        = 1 * time.Hour
+	stagingSweepInterval = 1 * time.Hour
+	// objTempMaxAge is deliberately longer than stagingMaxAge: a
+	// ".tmp-stream-*" leftover is a PutStream killed mid-ingest, and a
+	// legitimate single large object can stream for a while. 6h is far past
+	// any real ingest (multi-GB at ~30 MB/s finishes in minutes) yet still
+	// reclaims true orphans.
+	objTempMaxAge = 6 * time.Hour
 )
 
 func runStagingSweeper(ctx context.Context, st *store.Store) {
@@ -49,9 +55,17 @@ func tickStagingSweeper(st *store.Store) {
 	cleaned, err := st.SweepStaleStaging(stagingMaxAge)
 	if err != nil {
 		log.Printf("staging sweeper: %v (cleaned=%d this cycle)", err, cleaned)
-		return
-	}
-	if cleaned > 0 {
+	} else if cleaned > 0 {
 		log.Printf("staging sweeper: pruned %d stale staging dir(s)", cleaned)
+	}
+
+	// Also reclaim PutStream temp files orphaned by a kill mid-ingest. These
+	// are invisible to List/UsedBytes (non-hex names) so they never corrupt
+	// accounting; this only frees their disk space.
+	tmps, err := st.SweepStaleObjectTemps(objTempMaxAge)
+	if err != nil {
+		log.Printf("staging sweeper: object-temp sweep: %v (cleaned=%d)", err, tmps)
+	} else if tmps > 0 {
+		log.Printf("staging sweeper: pruned %d stale object temp(s)", tmps)
 	}
 }

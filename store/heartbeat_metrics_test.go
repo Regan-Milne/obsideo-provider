@@ -123,12 +123,12 @@ func TestSweepStaleStaging_PrunesOldKeepsNew(t *testing.T) {
 	now := time.Now()
 	// Three staging dirs with mtimes spanning the cutoff.
 	cases := []struct {
-		merkle    string
-		mtimeAge  time.Duration
-		shouldGo  bool
+		merkle   string
+		mtimeAge time.Duration
+		shouldGo bool
 	}{
-		{hexMerkle(0), 2 * time.Hour, true},  // very old → prune
-		{hexMerkle(1), 65 * time.Minute, true}, // just over cutoff → prune
+		{hexMerkle(0), 2 * time.Hour, true},     // very old → prune
+		{hexMerkle(1), 65 * time.Minute, true},  // just over cutoff → prune
 		{hexMerkle(2), 30 * time.Minute, false}, // fresh → keep
 	}
 	for _, c := range cases {

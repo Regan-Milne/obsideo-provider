@@ -88,9 +88,9 @@ func (s *Server) handlePauseStatus(w http.ResponseWriter, r *http.Request) {
 	cur := s.pause.Current(now)
 	if cur == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"active":             true,
-			"configured":         true,
-			"paused":             false,
+			"active":               true,
+			"configured":           true,
+			"paused":               false,
 			"last_sequence_number": s.pause.LastSequence(),
 		})
 		return

@@ -21,12 +21,12 @@ type PauseChecker interface {
 }
 
 // Refresher orchestrates periodic coverage-cache refresh:
-//   1. List all held merkle roots on local disk.
-//   2. Batch them at Client.BatchSize; query the coord per batch.
-//   3. For each root in each successful response, call store.UpdateCoverage
-//      with the answer (coverage cache handles the first-seen transition).
-//   4. On batch failure, log and skip: the prior cache state is preserved
-//      (retain-everything per design §6.6).
+//  1. List all held merkle roots on local disk.
+//  2. Batch them at Client.BatchSize; query the coord per batch.
+//  3. For each root in each successful response, call store.UpdateCoverage
+//     with the answer (coverage cache handles the first-seen transition).
+//  4. On batch failure, log and skip: the prior cache state is preserved
+//     (retain-everything per design §6.6).
 //
 // The Refresher is safe for concurrent RunOnce calls per instance, because
 // store.UpdateCoverage is file-atomic and each Put handles its own lock.
@@ -127,10 +127,10 @@ func (r *Refresher) RunOnce(ctx context.Context) error {
 				continue
 			}
 			update := store.CoverageAnswer{
-				Status:     ans.Status,
-				Contracted: ans.Contracted,
-				Until:      ans.Until,
-				Reason:     ans.Reason,
+				Status:      ans.Status,
+				Reclaimable: ans.MayReclaim(),
+				Until:       ans.Until,
+				Reason:      ans.Reason,
 			}
 			if err := r.Store.UpdateCoverage(root, update, now); err != nil {
 				failed++

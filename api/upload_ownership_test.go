@@ -65,9 +65,24 @@ func validPayloadBytes() []byte {
 	return bytes.Repeat([]byte("x"), 256)
 }
 
+// merkleRootOf computes the real network merkle root of data. Upload now
+// verifies the streamed bytes against the URL/token merkle at close
+// (verify-at-close), so these tests must address objects by their true root
+// rather than a placeholder like strings.Repeat("a", 64). The computation is
+// independently pinned to the golden vectors in store/merkle_test.go.
+func merkleRootOf(t *testing.T, data []byte) string {
+	t.Helper()
+	root, _, err := store.BuildMerkleTree(data)
+	if err != nil {
+		t.Fatalf("BuildMerkleTree: %v", err)
+	}
+	return root
+}
+
 func TestUpload_WithOwnerPubkeys_WritesOwnershipFile(t *testing.T) {
 	srv, priv := newTestServerWithVerifier(t)
-	merkle := strings.Repeat("a", 64)
+	payload := validPayloadBytes()
+	merkle := merkleRootOf(t, payload)
 	ownerPub := "obk_pub_" + strings.Repeat("P", 43)
 	ownerSig := "obk_sig_" + strings.Repeat("S", 43)
 
@@ -82,7 +97,7 @@ func TestUpload_WithOwnerPubkeys_WritesOwnershipFile(t *testing.T) {
 		ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
 	}
 	tok := signTestToken(t, priv, claims)
-	rec := uploadTo(t, srv, merkle, tok, validPayloadBytes())
+	rec := uploadTo(t, srv, merkle, tok, payload)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload: code=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -107,7 +122,8 @@ func TestUpload_WithoutOwnerSigPubkey_SkipsOwnershipFile(t *testing.T) {
 	// The mixed-state rule from design §9.2 says provider-clean must skip
 	// the ownership-file write entirely in this case.
 	srv, priv := newTestServerWithVerifier(t)
-	merkle := strings.Repeat("b", 64)
+	payload := validPayloadBytes()
+	merkle := merkleRootOf(t, payload)
 
 	claims := tokens.Claims{
 		Type:        "upload",
@@ -120,7 +136,7 @@ func TestUpload_WithoutOwnerSigPubkey_SkipsOwnershipFile(t *testing.T) {
 		ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
 	}
 	tok := signTestToken(t, priv, claims)
-	rec := uploadTo(t, srv, merkle, tok, validPayloadBytes())
+	rec := uploadTo(t, srv, merkle, tok, payload)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload: code=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -133,7 +149,8 @@ func TestUpload_WithNeitherPubkey_SkipsOwnershipFile(t *testing.T) {
 	// Fully pre-Phase-1 token (no pubkey claims at all). Still a valid
 	// upload path; still no ownership file.
 	srv, priv := newTestServerWithVerifier(t)
-	merkle := strings.Repeat("c", 64)
+	payload := validPayloadBytes()
+	merkle := merkleRootOf(t, payload)
 
 	claims := tokens.Claims{
 		Type:       "upload",
@@ -144,7 +161,7 @@ func TestUpload_WithNeitherPubkey_SkipsOwnershipFile(t *testing.T) {
 		ExpiresAt:  time.Now().Add(5 * time.Minute).Unix(),
 	}
 	tok := signTestToken(t, priv, claims)
-	rec := uploadTo(t, srv, merkle, tok, validPayloadBytes())
+	rec := uploadTo(t, srv, merkle, tok, payload)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload: code=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -158,7 +175,8 @@ func TestUpload_IdempotentOnOwnershipExists(t *testing.T) {
 	// Invariant 4: first upload wins; subsequent uploads of the same
 	// merkle converge on the same state.
 	srv, priv := newTestServerWithVerifier(t)
-	merkle := strings.Repeat("d", 64)
+	payload := validPayloadBytes()
+	merkle := merkleRootOf(t, payload)
 	ownerPub := "obk_pub_" + strings.Repeat("P", 43)
 	ownerSig := "obk_sig_" + strings.Repeat("S", 43)
 
@@ -173,7 +191,6 @@ func TestUpload_IdempotentOnOwnershipExists(t *testing.T) {
 		ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
 	}
 	tok := signTestToken(t, priv, claims)
-	payload := validPayloadBytes()
 
 	// First upload writes ownership.
 	rec1 := uploadTo(t, srv, merkle, tok, payload)
@@ -211,7 +228,8 @@ func TestUpload_LegacyThenV21_DoesNotBackfillOwnership(t *testing.T) {
 	// come from the same customer (upload tokens are coord-issued per
 	// upload); they can't be attacker-initiated.
 	srv, priv := newTestServerWithVerifier(t)
-	merkle := strings.Repeat("e", 64)
+	payload := validPayloadBytes()
+	merkle := merkleRootOf(t, payload)
 
 	legacyClaims := tokens.Claims{
 		Type:       "upload",
@@ -222,7 +240,7 @@ func TestUpload_LegacyThenV21_DoesNotBackfillOwnership(t *testing.T) {
 		ExpiresAt:  time.Now().Add(5 * time.Minute).Unix(),
 	}
 	legacyTok := signTestToken(t, priv, legacyClaims)
-	rec1 := uploadTo(t, srv, merkle, legacyTok, validPayloadBytes())
+	rec1 := uploadTo(t, srv, merkle, legacyTok, payload)
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("legacy upload: %d", rec1.Code)
 	}
@@ -235,7 +253,7 @@ func TestUpload_LegacyThenV21_DoesNotBackfillOwnership(t *testing.T) {
 	v21Claims.OwnerPubkey = "obk_pub_" + strings.Repeat("P", 43)
 	v21Claims.OwnerSigPubkey = "obk_sig_" + strings.Repeat("S", 43)
 	v21Tok := signTestToken(t, priv, v21Claims)
-	rec2 := uploadTo(t, srv, merkle, v21Tok, validPayloadBytes())
+	rec2 := uploadTo(t, srv, merkle, v21Tok, payload)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("v2.1 replay: %d", rec2.Code)
 	}

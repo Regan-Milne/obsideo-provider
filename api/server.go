@@ -11,6 +11,16 @@ import (
 	"github.com/obsideo/obsideo-provider/tokens"
 )
 
+// ProofSigner signs the canonical payload of a challenge response so a third
+// party can attribute the proof to this provider rather than trusting the
+// coordinator. *identity.Identity satisfies it. A nil signer means the
+// provider does not sign — responses go out exactly as they did before signing
+// existed (legacy / local-dev), which keeps mixed-fleet behavior graceful.
+type ProofSigner interface {
+	Sign(payload []byte) []byte
+	KeyID() string
+}
+
 // Server is the provider HTTP server.
 type Server struct {
 	store                  *store.Store
@@ -19,7 +29,15 @@ type Server struct {
 	pause                  *pausectl.State // nil when no cold key configured
 	providerID             string          // echoed in challenge responses; "" disables strict provider_id checks
 	acceptUncontractedData bool            // operator policy: accept uploads from non-contracted accounts
+	signer                 ProofSigner     // nil = do not sign challenge responses (legacy/dev)
+	clientChallenges       *challengeRateLimiter
 }
+
+// SetProofSigner attaches a signing identity so challenge responses are signed.
+// Additive and optional: left unset, the server behaves exactly as before.
+// Kept separate from New so the many existing New callers (and their tests)
+// need no change.
+func (s *Server) SetProofSigner(signer ProofSigner) { s.signer = signer }
 
 // New creates a Server. Pass nil for pause to disable the circuit
 // breaker (POST /control/pause will 503 and IsPaused always returns
@@ -39,6 +57,7 @@ func New(st *store.Store, v *tokens.Verifier, pause *pausectl.State, providerID 
 		pause:                  pause,
 		providerID:             providerID,
 		acceptUncontractedData: acceptUncontractedData,
+		clientChallenges:       newChallengeRateLimiter(),
 	}
 }
 
@@ -46,7 +65,11 @@ func New(st *store.Store, v *tokens.Verifier, pause *pausectl.State, providerID 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
-	// Authenticated (coordinator-issued JWT required).
+	// Coordinator-issued JWT required. Note there is no router-level
+	// middleware here: each handler below calls bearerToken + verifier.
+	// Verify itself. Adding a route to this group does NOT authenticate
+	// it — an unauthenticated DELETE /objects/{merkle} sat in the
+	// "internal" group below for months on exactly that assumption.
 	r.Post("/upload/{merkle}", s.handleUpload)
 	// Chunked upload (used by SDK for files >10 MB). Ported from
 	// provider/api/chunked.go; same wire protocol the SDK has been using
@@ -67,11 +90,38 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/control/pause", s.handlePauseSignal)
 	r.Get("/control/pause", s.handlePauseStatus)
 
+	// Client-issued possession challenge (signed-proofs Level 2, "sovereign
+	// verification"). Token-authenticated + rate-limited; same wire format
+	// as /challenge so one verifier serves both audiences.
+	r.Post("/client-challenge", s.handleClientChallenge)
+
 	// Internal — called by coordinator; restrict at firewall in production.
 	r.Post("/challenge", s.handleChallenge)
 	r.Post("/replicate", s.handleReplicate)
-	r.Delete("/objects/{merkle}", s.handleDelete)
-	r.Get("/list", s.handleList)
+
+	// DELIBERATELY ABSENT — do not re-add:
+	//
+	//   DELETE /objects/{merkle}   (was s.handleDelete)
+	//   GET    /list               (was s.handleList)
+	//
+	// Both were unauthenticated. Together they were a complete remote
+	// wipe primitive: GET /list to enumerate every merkle root held,
+	// then DELETE /objects/{root} per root. Providers serve public
+	// HTTPS, so this was reachable from anywhere on the internet with
+	// no credential of any kind. Verified live on the whole fleet
+	// 2026-07-31.
+	//
+	// Erase is now expressible only as POST /delete/{merkle}, which
+	// requires the customer's Ed25519 signature over the canonical
+	// delete command verified against this provider's own ownership
+	// record (see delete.go). That is the design principle: the
+	// coordinator may CARRY a signed delete but cannot FORGE one, so
+	// no coord compromise yields erase authority.
+	//
+	// Neither route had a production caller. /list was read only by
+	// coordinator/gc's coord-initiated delete path, which is removed in
+	// this same change; the coordinator learns provider contents by
+	// provider push via POST /v1/provider/roots/status.
 
 	// Health.
 	r.Get("/health", s.handleHealth)

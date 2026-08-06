@@ -10,7 +10,9 @@ import (
 	"github.com/obsideo/obsideo-provider/api"
 	"github.com/obsideo/obsideo-provider/config"
 	"github.com/obsideo/obsideo-provider/coverage"
+	"github.com/obsideo/obsideo-provider/dirfetch"
 	"github.com/obsideo/obsideo-provider/gc"
+	"github.com/obsideo/obsideo-provider/identity"
 	"github.com/obsideo/obsideo-provider/pausectl"
 	"github.com/obsideo/obsideo-provider/store"
 	"github.com/obsideo/obsideo-provider/tokens"
@@ -60,7 +62,19 @@ func Start(cfgPath, version string) error {
 			cur.Signal.SequenceNumber, cur.Signal.ExpiresAt)
 	}
 
+	// Provider signing identity (signed possession proofs). Generated on
+	// first boot, persisted in the data dir, never silently regenerated —
+	// a malformed key file is a hard bootstrap error because silently
+	// minting a new key would invalidate every proof this provider ever
+	// signed. See identity package doc + vault note_signed_proofs_build_plan.
+	ident, err := identity.LoadOrCreate(cfg.Data.Path)
+	if err != nil {
+		return fmt.Errorf("load provider signing identity: %w", err)
+	}
+	log.Printf("signing identity: public_key=%s key_id=%s", ident.PublicKeyHex(), ident.KeyID())
+
 	srv := api.New(st, v, pauseState, cfg.ProviderID, cfg.AcceptsUncontractedData())
+	srv.SetProofSigner(ident)
 
 	// Heartbeat loop: keep coord's LastHeartbeat fresh so placement
 	// filter doesn't reject us as stale. Only starts if both
@@ -71,7 +85,7 @@ func Start(cfgPath, version string) error {
 	// config (sent only when non-empty so a fresh-installed operator
 	// doesn't blank coord's existing record).
 	if cfg.ProviderID != "" && cfg.Coordinator.URL != "" {
-		go runHeartbeatLoop(context.Background(), cfg.Coordinator.URL, cfg.ProviderID, st, cfg.NobleWalletAddress, version)
+		go runHeartbeatLoop(context.Background(), cfg.Coordinator.URL, cfg.ProviderID, st, cfg.NobleWalletAddress, version, ident.PublicKeyHex())
 	} else {
 		log.Printf("heartbeat: provider_id or coordinator.url empty; loop disabled (provider will go stale)")
 	}
@@ -136,6 +150,35 @@ func Start(cfgPath, version string) error {
 		}
 	}
 
+	// Phase 1 multi-authority directory-fetch loop. Periodically pulls
+	// the central-Coord-signed directory and adds any newly-registered
+	// authorized signers (DC pubkeys) to the Verifier. Skipped when
+	// coordinator URL or provider API key is empty (local dev / not
+	// yet onboarded). Failures log + retry; never replaces in-memory
+	// trust list with unverified data. See [[dc_transition_plan]]
+	// §"Architectural decisions locked" decision 4.
+	if cfg.Coordinator.URL != "" && cfg.Coordinator.ProviderAPIKey != "" {
+		seedPub := v.SeedKey()
+		if seedPub == nil {
+			log.Printf("dirfetch: verifier has no seed key; loop disabled (this should not happen if NewVerifier succeeded)")
+		} else {
+			refresher, err := dirfetch.New(dirfetch.Options{
+				CoordURL:    cfg.Coordinator.URL,
+				APIKey:      cfg.Coordinator.ProviderAPIKey,
+				CoordPubKey: seedPub,
+				Verifier:    v,
+				Logger:      log.Default(),
+			})
+			if err != nil {
+				log.Printf("dirfetch: init failed: %v (loop disabled)", err)
+			} else {
+				go refresher.Start(context.Background())
+			}
+		}
+	} else {
+		log.Printf("dirfetch: coordinator.url or provider_api_key empty; loop disabled (legacy single-coord trust only)")
+	}
+
 	// Staging-cruft sweeper: prune chunked-upload staging dirs older
 	// than maxAge once per hour. Closes the orphan-staging loop that
 	// was the most likely cause of Yala 2026-05-02 hitting "no space
@@ -149,10 +192,25 @@ func Start(cfgPath, version string) error {
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	httpSrv := &http.Server{
-		Addr:         addr,
-		Handler:      srv.Handler(),
-		ReadTimeout:  time.Duration(cfg.Server.ReadTimeout) * time.Second,
-		WriteTimeout: time.Duration(cfg.Server.WriteTimeout) * time.Second,
+		Addr:    addr,
+		Handler: srv.Handler(),
+		// Streaming ingest (and large downloads) move multi-GB objects over a
+		// single long-lived request/response. The previous absolute
+		// ReadTimeout (cfg default 30s) and WriteTimeout (300s) capped
+		// transfer time BY SIZE: a throttled 200 MiB single-shot upload died
+		// at exactly 30s in local e2e (gateway -> provider uploads a large
+		// object as one long PUT, so this is a real ceiling). Bound only the
+		// cheap DoS vectors — header slowloris (ReadHeaderTimeout) and idle
+		// keep-alives (IdleTimeout) — and leave the body read / response write
+		// uncapped. Mirrors the gateway's absolute->idle timeout fix
+		// (s3-gateway 4fad48e). NOTE: cfg.Server.WriteTimeout is intentionally
+		// no longer applied (it would re-cap large transfers); read_timeout is
+		// reused as the header-phase bound. Idle-based per-read body deadlines
+		// are the recommended hardening follow-up (see note_provider_streaming).
+		ReadHeaderTimeout: time.Duration(cfg.Server.ReadTimeout) * time.Second,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	log.Printf("obsideo-provider listening on %s", addr)

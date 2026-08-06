@@ -184,29 +184,29 @@ func (s *Server) handleUploadFinalize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Assemble. Same memory profile as the legacy implementation —
-	// the assembled buffer is sized to the full ciphertext. For very
-	// large uploads this is bounded by available RAM; the SDK's 5 MB
-	// transport-chunk size keeps individual reads small but the
-	// merkle-verifying Put still needs the full buffer in one call.
-	var assembled []byte
-	for i := 0; i < total; i++ {
-		chunk, err := os.ReadFile(s.store.StagingChunkPath(merkle, i))
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("read chunk %d: %v", i, err))
+	// Stream the staged transport chunks in order through PutStream, which
+	// re-chunks at the frozen 1 MiB merkle boundary, hashes incrementally,
+	// verifies the root at close, and commits atomically. The previous
+	// implementation assembled every chunk into one []byte sized to the full
+	// ciphertext — the same RAM ceiling the gateway just removed, and the
+	// path the SDK uses for all files >10 MB (i.e. the large objects this
+	// work targets). stagedChunksReader holds at most one chunk file open at
+	// a time, so assembly is now flat-memory. No chunk_size param is honored:
+	// the merkle root is only defined at 1 MiB.
+	reader := &stagedChunksReader{store: s.store, merkle: merkle, total: total}
+	size, err := s.store.PutStream(merkle, reader)
+	_ = reader.Close()
+	if err != nil {
+		if errors.Is(err, store.ErrMerkleMismatch) {
+			// Assembled bytes do not hash to the claimed root: the staged
+			// upload is garbage, drop it so a resume starts clean.
+			_ = s.store.RemoveStaging(merkle)
+			writeError(w, http.StatusUnprocessableEntity,
+				"assembled chunks do not hash to merkle root "+merkle)
 			return
 		}
-		assembled = append(assembled, chunk...)
-	}
-
-	chunkSize := store.DefaultChunkSize
-	if v := r.URL.Query().Get("chunk_size"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			chunkSize = n
-		}
-	}
-
-	if err := s.store.Put(merkle, assembled, chunkSize); err != nil {
+		// Transient store error: keep staging so the client can retry
+		// finalize without re-uploading every chunk.
 		writeError(w, http.StatusInternalServerError, "store: "+err.Error())
 		return
 	}
@@ -233,8 +233,63 @@ func (s *Server) handleUploadFinalize(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"merkle_root": merkle,
-		"size_bytes":  len(assembled),
+		"size_bytes":  size,
 	})
+}
+
+// stagedChunksReader presents the staged transport chunks [0,total) as a
+// single io.Reader, opening at most one chunk file at a time so finalize
+// assembly never buffers the whole object in RAM (the SDK uses ~5 MB
+// transport chunks; a multi-GB object would otherwise need a multi-GB
+// []byte). The merkle re-chunking at 1 MiB happens downstream in TreeBuilder,
+// independent of this transport chunking — exactly as the old assemble-then-
+// Put path did.
+type stagedChunksReader struct {
+	store  *store.Store
+	merkle string
+	total  int
+	idx    int
+	cur    *os.File
+}
+
+func (sr *stagedChunksReader) Read(p []byte) (int, error) {
+	for {
+		if sr.cur == nil {
+			if sr.idx >= sr.total {
+				return 0, io.EOF
+			}
+			f, err := os.Open(sr.store.StagingChunkPath(sr.merkle, sr.idx))
+			if err != nil {
+				return 0, fmt.Errorf("open staged chunk %d: %w", sr.idx, err)
+			}
+			sr.cur = f
+		}
+		n, err := sr.cur.Read(p)
+		if n > 0 {
+			return n, nil
+		}
+		if err == io.EOF {
+			_ = sr.cur.Close()
+			sr.cur = nil
+			sr.idx++
+			continue
+		}
+		if err != nil {
+			_ = sr.cur.Close()
+			sr.cur = nil
+			return 0, err
+		}
+		// n == 0, err == nil: loop and read again.
+	}
+}
+
+func (sr *stagedChunksReader) Close() error {
+	if sr.cur != nil {
+		err := sr.cur.Close()
+		sr.cur = nil
+		return err
+	}
+	return nil
 }
 
 // handleUploadStatus returns the indices of staged chunks for an

@@ -38,11 +38,47 @@ type Request struct {
 // GC consumes Contracted; the existing refresher and challenge code
 // continue to consume Status.
 type RootStatus struct {
-	Status     string `json:"status"`
+	Status string `json:"status"`
+	// Reclaimable is the destruction authorization from the coord: true
+	// ONLY for revoked / suspended / paid-expired / corrupted accounts.
+	// The ONLY field GC may consult.
+	//
+	// Phrased in the destructive direction so the zero value is safe:
+	// an absent key, a failed parse or a forgotten assignment all read
+	// as "not reclaimable" = keep.
+	//
+	// Pointer so "coord did not send it" is distinguishable from
+	// "coord sent false". A coordinator older than 2026-07-31 omits it.
+	Reclaimable *bool `json:"reclaimable,omitempty"`
+	// Contracted is the legacy field. On a current coordinator it is
+	// populated as !Reclaimable so old provider binaries fail safe; on
+	// an old coordinator it carries the paid-only billing answer, which
+	// is the bug that unlinked 1,421 live enterprise objects on
+	// 2026-07-31. Never read it directly — use MayReclaim().
 	Contracted bool   `json:"contracted"`
 	Until      string `json:"until,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 }
+
+// MayReclaim is the single accessor a destructive path may use. It
+// prefers the explicit `reclaimable` field and falls back to the
+// inverse of legacy `contracted` only when the coordinator omitted it.
+//
+// The fallback is the LESS safe answer, because an old coordinator
+// cannot distinguish a free-tier customer from abandoned data — it only
+// knows who is being billed. That is why GC refuses to act at all when
+// CoordSentReclaimable is false; see clientRechecker.Recheck.
+func (rs RootStatus) MayReclaim() bool {
+	if rs.Reclaimable != nil {
+		return *rs.Reclaimable
+	}
+	return !rs.Contracted
+}
+
+// CoordSentReclaimable reports whether the coordinator is new enough to
+// answer the destruction question explicitly. GC treats false as "not
+// safe to delete anything".
+func (rs RootStatus) CoordSentReclaimable() bool { return rs.Reclaimable != nil }
 
 // Response is the decoded coord response: a map keyed by merkle root hex.
 type Response map[string]RootStatus

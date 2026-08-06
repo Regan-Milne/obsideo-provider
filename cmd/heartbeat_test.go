@@ -43,7 +43,7 @@ func hexMerkle(seed int) string {
 // provider doesn't report it" is a reasonable fallback but should
 // never be the steady-state for an upgraded operator.
 func TestBuildPayload_IncludesUsedAndDiskFree(t *testing.T) {
-	body, err := buildPayload(12345, 67890, "", "")
+	body, err := buildPayload(12345, 67890, "", "", "")
 	if err != nil {
 		t.Fatalf("buildPayload: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestBuildPayload_IncludesUsedAndDiskFree(t *testing.T) {
 // the field." Pin the difference between "empty value" (don't send)
 // for the wallet field and "zero value" (send) for the byte fields.
 func TestBuildPayload_ZeroBytesStillIncluded(t *testing.T) {
-	body, _ := buildPayload(0, 0, "", "")
+	body, _ := buildPayload(0, 0, "", "", "")
 	var got map[string]any
 	_ = json.Unmarshal(body, &got)
 	if _, present := got["used_bytes"]; !present {
@@ -85,7 +85,7 @@ func TestBuildPayload_ZeroBytesStillIncluded(t *testing.T) {
 // loop.
 func TestBuildPayload_NobleWalletIncludedWhenNonEmpty(t *testing.T) {
 	const wallet = "noble1r9ljcmr4sal6tpvsveurpchtfvqukwp0jfwzx8"
-	body, _ := buildPayload(100, 200, wallet, "")
+	body, _ := buildPayload(100, 200, wallet, "", "")
 	var got map[string]any
 	_ = json.Unmarshal(body, &got)
 	if got["noble_wallet_address"] != wallet {
@@ -100,7 +100,7 @@ func TestBuildPayload_NobleWalletIncludedWhenNonEmpty(t *testing.T) {
 // hasn't configured their wallet shouldn't blank coord's existing
 // record by accident.
 func TestBuildPayload_NobleWalletAbsentWhenEmpty(t *testing.T) {
-	body, _ := buildPayload(0, 0, "", "")
+	body, _ := buildPayload(0, 0, "", "", "")
 	var got map[string]any
 	_ = json.Unmarshal(body, &got)
 	if _, present := got["noble_wallet_address"]; present {
@@ -114,7 +114,7 @@ func TestBuildPayload_NobleWalletAbsentWhenEmpty(t *testing.T) {
 // /internal/providers and operators see at a glance who needs to
 // upgrade.
 func TestBuildPayload_ProviderVersionIncludedWhenNonEmpty(t *testing.T) {
-	body, _ := buildPayload(100, 200, "", "provider-v1-1")
+	body, _ := buildPayload(100, 200, "", "provider-v1-1", "")
 	var got map[string]any
 	_ = json.Unmarshal(body, &got)
 	if got["provider_version"] != "provider-v1-1" {
@@ -126,7 +126,7 @@ func TestBuildPayload_ProviderVersionIncludedWhenNonEmpty(t *testing.T) {
 // the wallet field. A dev build (no Version set via ldflags) shouldn't
 // blank coord's record of whatever a previous versioned build reported.
 func TestBuildPayload_ProviderVersionAbsentWhenEmpty(t *testing.T) {
-	body, _ := buildPayload(100, 200, "", "")
+	body, _ := buildPayload(100, 200, "", "", "")
 	var got map[string]any
 	_ = json.Unmarshal(body, &got)
 	if _, present := got["provider_version"]; present {
@@ -197,7 +197,7 @@ func TestTickHeartbeat_PostsCorrectPayloadEndToEnd(t *testing.T) {
 
 	state := &heartbeatState{}
 	tickHeartbeat(context.Background(), &http.Client{Timeout: 5 * time.Second},
-		srv.URL+"/internal/providers/test-id/heartbeat", st, wallet, "", state)
+		srv.URL+"/internal/providers/test-id/heartbeat", st, wallet, "", "", state)
 
 	captured.mu.Lock()
 	defer captured.mu.Unlock()
@@ -236,7 +236,7 @@ func TestTickHeartbeat_RecordsSuccessOn2xx(t *testing.T) {
 	defer srv.Close()
 	state := &heartbeatState{}
 	tickHeartbeat(context.Background(), &http.Client{Timeout: 5 * time.Second},
-		srv.URL+"/heartbeat", st, "", "", state)
+		srv.URL+"/heartbeat", st, "", "", "", state)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if !state.everSucceeded {
@@ -256,7 +256,7 @@ func TestTickHeartbeat_RecordsFailureOn5xx(t *testing.T) {
 	defer srv.Close()
 	state := &heartbeatState{}
 	tickHeartbeat(context.Background(), &http.Client{Timeout: 5 * time.Second},
-		srv.URL+"/heartbeat", st, "", "", state)
+		srv.URL+"/heartbeat", st, "", "", "", state)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.consecFailures != 1 {
@@ -282,7 +282,7 @@ func TestTickHeartbeat_RecoveryAfterFailureLogged(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	tickHeartbeat(context.Background(), &http.Client{Timeout: 5 * time.Second},
-		srvOK.URL+"/heartbeat", st, "", "", state)
+		srvOK.URL+"/heartbeat", st, "", "", "", state)
 	srvOK.Close()
 
 	// Now: failure → recordFailure increments consecFailures.
@@ -290,7 +290,7 @@ func TestTickHeartbeat_RecoveryAfterFailureLogged(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	tickHeartbeat(context.Background(), &http.Client{Timeout: 5 * time.Second},
-		srvFail.URL+"/heartbeat", st, "", "", state)
+		srvFail.URL+"/heartbeat", st, "", "", "", state)
 	srvFail.Close()
 	state.mu.Lock()
 	if state.consecFailures != 1 {
@@ -304,7 +304,7 @@ func TestTickHeartbeat_RecoveryAfterFailureLogged(t *testing.T) {
 	}))
 	defer srvOK2.Close()
 	tickHeartbeat(context.Background(), &http.Client{Timeout: 5 * time.Second},
-		srvOK2.URL+"/heartbeat", st, "", "", state)
+		srvOK2.URL+"/heartbeat", st, "", "", "", state)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.consecFailures != 0 {
@@ -312,5 +312,24 @@ func TestTickHeartbeat_RecoveryAfterFailureLogged(t *testing.T) {
 	}
 	if !state.everSucceeded {
 		t.Errorf("after recovery: everSucceeded=false, want true")
+	}
+}
+
+// TestBuildPayload_SigningPubKeyIncludedWhenNonEmpty pins the signed-proofs
+// key self-report: same omission-preserves contract as the wallet field, so
+// a legacy binary (empty key) never blanks a real key coord already holds.
+func TestBuildPayload_SigningPubKeyIncludedWhenNonEmpty(t *testing.T) {
+	const pk = "e1be7ebf3324006050b4a965e8dec3eb21520c368d26f9aad8476f1460877da8"
+	body, _ := buildPayload(1, 2, "", "provider-v1-4", pk)
+	var got map[string]any
+	_ = json.Unmarshal(body, &got)
+	if got["signing_public_key"] != pk {
+		t.Errorf("signing_public_key=%v, want %q", got["signing_public_key"], pk)
+	}
+	body2, _ := buildPayload(1, 2, "", "", "")
+	var got2 map[string]any
+	_ = json.Unmarshal(body2, &got2)
+	if _, present := got2["signing_public_key"]; present {
+		t.Errorf("signing_public_key present with empty value, want absent")
 	}
 }

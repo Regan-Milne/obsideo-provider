@@ -25,23 +25,33 @@ import (
 // per-object isolation makes coord-blip handling trivial — one failure
 // does not poison the whole sweep cycle.
 //
-// Recheck returns the live `contracted` bool from the coord, or wraps
-// ErrRecheckUnusable with a reason label when no usable answer was
-// obtained. GC's candidate predicate is `!contracted`; the orthogonal
-// `covered`/`uncovered` Status is not consulted at the recheck point.
+// Recheck returns the live RETENTION entitlement from the coord
+// (`retained` — Resolve() == covered, so true for paid AND testdrive
+// AND enterprise AND promo), or wraps ErrRecheckUnusable with a reason
+// label when no usable answer was obtained. GC's candidate predicate is
+// `!retained`.
+//
+// ⛔ It is NOT `!contracted`. Until 2026-07-31 this read the coord's
+// paid-only billing answer, which reports every live enterprise, promo
+// and testdrive account as reclaimable — that is what unlinked 1,421
+// live verified enterprise objects. A billing predicate must never
+// decide a retention question. See coordinator/account/coverage.go.
 //
 // Outcomes:
 //
-//   - (contracted, "", nil)    — coord answered authoritatively.
+//   - (retained, "", nil)      — coord answered authoritatively.
 //   - (_, reason, ErrRecheckUnusable wrapped) — answer not usable
-//     (network/timeout/5xx/parse). Sweeper increments
-//     gc_recheck_failures_total and skips.
+//     (network/timeout/5xx/parse/no_retained_field). Sweeper increments
+//     gc_recheck_failures_total and skips. `no_retained_field` means the
+//     coordinator is too old to answer the retention question at all,
+//     which is treated as "never delete" rather than falling back to
+//     the billing answer.
 //
 // Returning a value without an error always means "this answer was
 // live, parsed, and authoritative." Production code never returns a
 // cached value here.
 type CoverageRechecker interface {
-	Recheck(ctx context.Context, merkleHex string) (contracted bool, reason string, err error)
+	Recheck(ctx context.Context, merkleHex string) (retained bool, reason string, err error)
 }
 
 // ErrRecheckUnusable is the sentinel a CoverageRechecker wraps when the
@@ -91,7 +101,17 @@ func (r *clientRechecker) Recheck(ctx context.Context, merkleHex string) (bool, 
 		// Treat as parse-class: the answer is structurally not usable.
 		return false, "parse", wrapUnusable(errors.New("coord response missing requested merkle"))
 	}
-	return rs.Contracted, "", nil
+	// A coordinator that does not send `retained` cannot answer the
+	// retention question — it only knows the paid-only billing answer,
+	// which reports live enterprise/promo/testdrive accounts as
+	// reclaimable. Refuse to produce a usable answer rather than delete
+	// on it. This is the guard that would have prevented the
+	// 2026-07-31 incident outright.
+	if !rs.CoordSentReclaimable() {
+		return false, "no_reclaimable_field", wrapUnusable(
+			errors.New("coordinator did not send `reclaimable`; refusing to evaluate deletion"))
+	}
+	return !rs.MayReclaim(), "", nil
 }
 
 // classifyRecheckError maps a *coverage.Client error into one of the
@@ -180,17 +200,17 @@ type Storage interface {
 // Counter discipline: monotonic increment only; never decrement. Reset
 // only by process restart. Gauges are recomputed each sweep cycle.
 type Metrics struct {
-	SweepsOK            atomic.Uint64
-	SweepsError         atomic.Uint64
-	CandidatesSeen      atomic.Uint64
-	MarkedUncontracted  atomic.Uint64
-	Quarantined         atomic.Uint64
-	Unlinked            atomic.Uint64
-	Recovered           atomic.Uint64
-	RecheckNetwork      atomic.Uint64
-	RecheckTimeout      atomic.Uint64
-	Recheck5xx          atomic.Uint64
-	RecheckParse        atomic.Uint64
+	SweepsOK           atomic.Uint64
+	SweepsError        atomic.Uint64
+	CandidatesSeen     atomic.Uint64
+	MarkedUncontracted atomic.Uint64
+	Quarantined        atomic.Uint64
+	Unlinked           atomic.Uint64
+	Recovered          atomic.Uint64
+	RecheckNetwork     atomic.Uint64
+	RecheckTimeout     atomic.Uint64
+	Recheck5xx         atomic.Uint64
+	RecheckParse       atomic.Uint64
 
 	// Gauges are simple atomics; they are overwritten each sweep so
 	// callers reading mid-sweep see either the prior or the new value
@@ -397,8 +417,8 @@ func (s *Sweeper) RunOnce(ctx context.Context) error {
 			// up, so we log and continue rather than rolling back the
 			// rename.
 			if err := s.cov.UpdateCoverage(e.MerkleHex, store.CoverageAnswer{
-				Status:     store.CoverageStatusCovered,
-				Contracted: true,
+				Status:      store.CoverageStatusCovered,
+				Reclaimable: false,
 			}, now); err != nil {
 				s.logf("gc: update coverage cache after restore failed merkle=%s: %v", e.MerkleHex, err)
 			}
@@ -457,7 +477,7 @@ func (s *Sweeper) RunOnce(ctx context.Context) error {
 			// store.ErrNotFound or read error: treat as no-info, skip.
 			continue
 		}
-		if cov.Contracted {
+		if !cov.Reclaimable {
 			// contracted → nothing to do. If first_seen_non_contracted
 			// is set here, store.UpdateCoverage already cleared it on
 			// the contracted transition.
@@ -470,8 +490,8 @@ func (s *Sweeper) RunOnce(ctx context.Context) error {
 		// as freshly observed at "now" — store.UpdateCoverage normally
 		// sets it, so this is a defensive fallback.
 		var firstSeen time.Time
-		if cov.FirstSeenNonContracted != nil {
-			firstSeen = *cov.FirstSeenNonContracted
+		if cov.FirstSeenReclaimable != nil {
+			firstSeen = *cov.FirstSeenReclaimable
 		} else {
 			firstSeen = now
 		}

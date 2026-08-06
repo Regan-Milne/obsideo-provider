@@ -16,28 +16,43 @@ no card). AI agents integrating storage: the executable contract lives at
 
 **Alpha.** See [Known limitations](#known-limitations) before deploying.
 
-## Upgrading to provider-v1-1
+## Upgrading from an older release
 
-If you are running any older release of this binary, the upgrade is a
-straightforward binary swap. The on-disk data format is unchanged.
+Upgrading is a binary swap. The on-disk object format is unchanged, so
+your existing `data/` directory carries over untouched.
 
 1. Stop your provider service.
-2. Backup your current binary (e.g. rename to `.pre-v1-1`).
+2. Back up your current binary (e.g. rename to `.pre-v1-5`).
 3. Download the new binary from the
-   [provider-v1-1 release](https://github.com/Regan-Milne/obsideo-provider/releases/tag/provider-v1-1)
+   [latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest)
    and put it in place of the old one.
-4. Verify version: `./obsideo-provider version` should print `provider-v1-1`.
+4. Verify version: `./obsideo-provider version` should print
+   `provider-v1-5-streaming-signed`.
 5. Restart the service. Look for `heartbeat: first success` in the logs
    within ~30 seconds.
 
-The coordinator's `/internal/providers` view populates the `version`
-field on your next heartbeat. Your `provider_id`, API key, Noble
-payout address, capacity, score, and placement record live on the
-coordinator and survive the upgrade. Your local data directory is
-untouched.
+On first start the provider generates an Ed25519 signing identity at
+`{data_dir}/provider_identity.key` (mode 0600) if one does not already
+exist. This is the key it uses to sign possession proofs. Back it up
+alongside your data directory. Your `provider_id`, API key, payout
+address, capacity, and placement record live on the coordinator and
+survive the upgrade.
 
-Full release notes, checksums, and what is bundled:
-[provider-v1-1 release notes](https://github.com/Regan-Milne/obsideo-provider/releases/tag/provider-v1-1).
+New since provider-v1-1:
+
+- **Streaming ingest.** Uploads are written to disk as they arrive, with
+  an incremental Merkle computation, so memory stays flat regardless of
+  object size. A corrupt or mis-addressed upload is rejected at ingest.
+- **Signed possession proofs.** The provider signs its challenge
+  responses with its Ed25519 identity, so a proof is attributable to the
+  node that produced it.
+- **Security hardening.** The previously unauthenticated
+  `DELETE /objects/{merkle}` and `GET /list` endpoints have been removed.
+  Erase is now expressible only as a customer-signed
+  `POST /delete/{merkle}`.
+
+Full release notes and checksums:
+[latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest).
 
 ## What this is
 
@@ -105,11 +120,17 @@ Expect the first-boot log to include `heartbeat: first success` within
 ```bash
 git clone https://github.com/Regan-Milne/obsideo-provider.git
 cd obsideo-provider
-go build -trimpath -ldflags "-s -w" -o obsideo-provider .
+./build.sh                       # stamps the release version into the binary
+./obsideo-provider version       # should print provider-v1-5-streaming-signed
 ./obsideo-provider start --config config.yaml
 ```
 
-Go 1.22+ required. Module path is `github.com/Regan-Milne/obsideo-provider`.
+`build.sh` runs `go build` with the version ldflag set. A plain
+`go build` also produces a working binary, but leaves the version string
+at its source default, so the node reports an older version to the
+coordinator. Go 1.22+ required; the in-tree module path is
+`github.com/obsideo/obsideo-provider`, and you build from the cloned
+tree (not via `go install`).
 
 ## Docker
 
@@ -175,24 +196,34 @@ See `config.example.yaml` for the minimum-viable config. Key fields:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/health` | None | `{"status":"ok"}` |
-| `POST` | `/upload/{merkle}` | Bearer (upload token) | Accept encrypted chunks |
+| `POST` | `/upload/{merkle}` | Bearer (upload token) | Accept an encrypted object |
+| `POST` | `/upload/{merkle}/chunk` | Bearer (upload token) | Streaming chunk of a large upload |
+| `POST` | `/upload/{merkle}/finalize` | Bearer (upload token) | Close and verify a streamed upload |
+| `GET` | `/upload/{merkle}/status` | Bearer (upload token) | Progress of an in-flight upload |
 | `GET` | `/download/{merkle}` | Bearer (download token) | Stream encrypted bytes |
-| `POST` | `/delete/{merkle}` | User Ed25519 signature | User-signed delete (Phase-1) |
+| `POST` | `/client-challenge` | Bearer (challenge or download token) | Customer-initiated possession proof |
+| `POST` | `/delete/{merkle}` | Customer Ed25519 signature | Customer-signed erase |
 | `POST` | `/control/pause` | Cold-key Ed25519 signature | Activate circuit breaker |
 | `GET` | `/control/pause` | None | Current circuit-breaker state |
-| `POST` | `/challenge` | None | Respond to proof-of-storage challenge |
-| `POST` | `/replicate` | None | Pull-and-push replication from a source provider |
-| `DELETE` | `/objects/{merkle}` | None | Legacy GC delete (off by default in Phase-1 coord) |
-| `GET` | `/list` | None | Enumerate held merkle roots |
+| `POST` | `/challenge` | None (coordinator-only) | Respond to a proof-of-storage challenge |
+| `POST` | `/replicate` | None (coordinator-only) | Pull-and-push replication from a source provider |
 
-Internal endpoints (challenge, replicate, delete, list) are
-unauthenticated by design — the coordinator is the only party that
-should reach them. Restrict at your firewall in production.
+Only `/challenge` and `/replicate` are unauthenticated: the coordinator
+is the only party that should reach them, so restrict them to the
+coordinator's source address at your firewall in production. Every other
+endpoint is either authenticated (a coordinator-issued token or a
+customer signature) or is `/health`, and must stay publicly reachable.
+
+The unauthenticated `DELETE /objects/{merkle}` and `GET /list` endpoints
+that earlier releases exposed have been removed. Together they were a
+remote-wipe primitive reachable from anywhere on the internet; erase now
+requires a customer's Ed25519 signature on `POST /delete/{merkle}`.
 
 ## Data layout
 
 ```
 data/
+  provider_identity.key              Ed25519 signing identity, generated first start, mode 0600
   objects/{merkle_hex}               ciphertext bytes (atomic temp-rename write)
   index/{merkle_hex}.json            chunk metadata for challenge responses
   ownership/{merkle_hex}.json        owner pubkeys, write-once mode 0o444
@@ -210,17 +241,17 @@ account that uploaded it.
 
 This repo is the public, releasable form of the provider source. The
 development history lives in a private upstream monorepo where the
-provider code is co-developed with the coordinator; each release tag
-here corresponds to a mirror of the upstream source at a specific
-commit, with the Go module path rewritten from the upstream's
-internal path (`github.com/obsideo/obsideo-provider`) to this repo's
-public path (`github.com/Regan-Milne/obsideo-provider`).
+provider code is co-developed with the coordinator; each release here
+mirrors the upstream provider source at a specific commit. The Go
+module path (`github.com/obsideo/obsideo-provider`) is preserved as-is,
+and a small amount of upstream-only tooling and cross-component test
+scaffolding is omitted (none of it affects the built binary).
 
-The authoritative source for any release is the tagged commit in
-this repo. Release notes name the tag (e.g. `provider-v1-1`) and the
-exact commit. Clone, check out the tag, `go build`, and you will
-produce a binary equivalent to the attached release artifact (same
-SHA-256).
+The authoritative source for any release is the tagged commit in this
+repo. Release notes name the tag (e.g. `provider-v1-5-streaming-signed`)
+and the exact commit. Clone, check out the tag, and run `./build.sh`
+with the same Go toolchain version, and you will produce a binary
+equivalent to the attached release artifact.
 
 Issues + discussion: file on this repo's issue tracker.
 

@@ -42,9 +42,9 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "source_url, merkle_root, and upload_token required")
 		return
 	}
-	if req.ChunkSize <= 0 {
-		req.ChunkSize = int64(store.DefaultChunkSize)
-	}
+	// ChunkSize is accepted for wire compatibility with the coordinator's
+	// replicator but no longer consumed: the merkle index is always written
+	// at the frozen 1 MiB chunk size by PutStream.
 
 	// Verify the coordinator's upload token. This is what authorizes the
 	// replication — the coord issued it for this merkle on this provider.
@@ -64,16 +64,29 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 
 	// Pull from the source provider's /download endpoint using the
 	// download_token. The source is a peer provider; the download_token
-	// was issued by the same coord for this merkle.
-	data, err := fetchFromSource(req.SourceURL, req.MerkleRoot, req.DownloadToken)
+	// was issued by the same coord for this merkle. The source streams its
+	// response (store.StreamTo), so we stream it straight into PutStream and
+	// never buffer the whole replica in RAM — essential for RF=3 of
+	// multi-GB objects, where a buffering receiver would OOM and silently
+	// cap durable replication at RAM ÷ concurrency.
+	resp, err := openSource(req.SourceURL, req.MerkleRoot, req.DownloadToken)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "fetch source: "+err.Error())
 		return
 	}
+	defer resp.Body.Close()
 
-	// Store locally using the same path regular uploads take. This writes
-	// the object file plus chunk index so challenges can be answered.
-	if err := s.store.Put(req.MerkleRoot, data, int(req.ChunkSize)); err != nil {
+	// PutStream verifies the merkle root at close, so a corrupt or wrong-root
+	// replica from the source is rejected here instead of being stored and
+	// later failing challenges. Treat a mismatch as a bad upstream (502) so
+	// the coord can pick another source.
+	size, err := s.store.PutStream(req.MerkleRoot, resp.Body)
+	if err != nil {
+		if errors.Is(err, store.ErrMerkleMismatch) {
+			writeError(w, http.StatusBadGateway,
+				"source bytes do not hash to merkle root "+req.MerkleRoot)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "store: "+err.Error())
 		return
 	}
@@ -99,11 +112,14 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"merkle_root": req.MerkleRoot,
-		"size_bytes":  len(data),
+		"size_bytes":  size,
 	})
 }
 
-func fetchFromSource(sourceAddr, merkle, token string) ([]byte, error) {
+// openSource issues the GET to the source provider's /download endpoint and
+// returns the live response for streaming. The caller owns resp.Body.Close().
+// On a non-200 the body is drained and closed so the connection can be reused.
+func openSource(sourceAddr, merkle, token string) (*http.Response, error) {
 	url := fmt.Sprintf("%s/download/%s", sourceAddr, merkle)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -115,9 +131,10 @@ func fetchFromSource(sourceAddr, merkle, token string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("source returned %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	return resp, nil
 }

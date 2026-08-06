@@ -21,10 +21,10 @@ func TestConfig_ApplyDefaults_FillsZeroValues(t *testing.T) {
 
 func TestConfig_ApplyDefaults_PreservesNonZero(t *testing.T) {
 	c := Config{
-		Enabled:                 true,
+		Enabled:                     true,
 		RetentionNonContractedHours: 24,
-		QuarantineHours:         3,
-		SweepIntervalHours:      1,
+		QuarantineHours:             3,
+		SweepIntervalHours:          1,
 	}
 	c.ApplyDefaults()
 	if c.RetentionNonContractedHours != 24 {
@@ -42,10 +42,10 @@ func TestConfig_Validate_DisabledSkipsAllChecks(t *testing.T) {
 	// Negative values would normally fail Validate, but with Enabled=false
 	// the whole block is unread so we don't punish typos in dead config.
 	c := Config{
-		Enabled:                 false,
+		Enabled:                     false,
 		RetentionNonContractedHours: -5,
-		QuarantineHours:         -1,
-		SweepIntervalHours:      0,
+		QuarantineHours:             -1,
+		SweepIntervalHours:          0,
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("disabled config should validate: %v", err)
@@ -73,10 +73,10 @@ func TestConfig_Validate_EnabledRequiresPositiveDurations(t *testing.T) {
 
 func TestConfig_Validate_EnabledHappyPath(t *testing.T) {
 	c := Config{
-		Enabled:                 true,
+		Enabled:                     true,
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("happy-path config should validate: %v", err)
@@ -86,8 +86,8 @@ func TestConfig_Validate_EnabledHappyPath(t *testing.T) {
 func TestConfig_DurationHelpers(t *testing.T) {
 	c := Config{
 		RetentionNonContractedHours: 48,
-		QuarantineHours:         6,
-		SweepIntervalHours:      6,
+		QuarantineHours:             6,
+		SweepIntervalHours:          6,
 	}
 	if got := c.RetentionNonContracted(); got != 48*time.Hour {
 		t.Errorf("RetentionUncovered: got %v, want 48h", got)
@@ -111,9 +111,9 @@ func TestConfig_NoRecheckKnob(t *testing.T) {
 	// to Config will break this literal and force the author to think
 	// about whether the new field belongs in the locked schema.
 	_ = Config{
-		Enabled:                 false,
+		Enabled:                     false,
 		RetentionNonContractedHours: 0,
-		QuarantineHours:         0,
-		SweepIntervalHours:      0,
+		QuarantineHours:             0,
+		SweepIntervalHours:          0,
 	}
 }
