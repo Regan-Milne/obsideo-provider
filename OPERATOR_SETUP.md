@@ -307,7 +307,7 @@ The file at `tokens.public_key_path` is missing or malformed.
 
 - Confirm the file exists: `ls coordinator_pub.pem`
 - Confirm it contains a PEM block: `head -1 coordinator_pub.pem` should print `-----BEGIN PUBLIC KEY-----`
-- Confirm the key body is exactly 32 bytes: `openssl pkey -pubin -in coordinator_pub.pem -text -noout 2>/dev/null | grep "bit"` should show `256 bit` (Ed25519)
+- Confirm the key body is exactly 32 bytes (the PEM body is the raw Ed25519 key, not an SPKI wrapper, so `openssl pkey -pubin` will NOT read it): `grep -v -- '-----' coordinator_pub.pem | base64 -d | wc -c` should print `32`
 
 If the coordinator writes the file automatically, make sure it has started at least once before copying.
 

@@ -1,17 +1,26 @@
-# provider-clean configuration example.
+# obsideo-provider configuration example.
 # Copy to config.yaml and edit before running.
 
 provider_id: "my-provider-1"   # human-readable label; not used for auth
 
 server:
-  host: "0.0.0.0"
+  host: "0.0.0.0"              # bind address; put a reverse proxy in front to terminate TLS on 443
   port: 3334
   read_timeout: 30
   write_timeout: 300
 
 data:
-  path: "./data"                # objects/ and index/ subdirs created here on first run
+  path: "./data"               # objects/, index/, and provider_identity.key are created here on first run
 
 tokens:
   public_key_path: "coordinator_pub.pem"
-  # Copy from coordinator/data/coordinator.pub after the coordinator first starts.
+  # The coordinator's public key. The network operator gives you this file.
+  # It is a PEM block whose body is the raw 32-byte Ed25519 key. The provider
+  # refuses to start without it.
+
+coordinator:
+  url: "https://coordinator.obsideo.io"   # the coordinator you register with and heartbeat to
+  provider_api_key: ""                     # your per-operator API key (given to you by the network operator)
+
+coverage:
+  enabled: true                # daily "which of my objects are still paid-for?" refresh; keep true for a live node
