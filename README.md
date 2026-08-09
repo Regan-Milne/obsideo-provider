@@ -12,47 +12,12 @@ This repository is the operator-facing implementation.
 Looking to **store** data instead of hosting it? Start at
 [obsideo.io/docs](https://obsideo.io/docs/) (12 GB free tier, self-serve,
 no card). AI agents integrating storage: the executable contract lives at
-[obsideo.io/agents.md](https://obsideo.io/agents.md).
+[obsideo.io/agents.md](https://obsideo.io/agents.md), or drop the
+[MCP server](https://github.com/Regan-Milne/obsideo-mcp) into Claude
+Desktop, Claude Code, or Cursor.
 
 **Alpha.** See [Known limitations](#known-limitations) before deploying.
 
-## Upgrading from an older release
-
-Upgrading is a binary swap. The on-disk object format is unchanged, so
-your existing `data/` directory carries over untouched.
-
-1. Stop your provider service.
-2. Back up your current binary (e.g. rename to `.pre-v1-5`).
-3. Download the new binary from the
-   [latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest)
-   and put it in place of the old one.
-4. Verify version: `./obsideo-provider version` should print
-   `provider-v1-5-streaming-signed`.
-5. Restart the service. Look for `heartbeat: first success` in the logs
-   within ~30 seconds.
-
-On first start the provider generates an Ed25519 signing identity at
-`{data_dir}/provider_identity.key` (mode 0600) if one does not already
-exist. This is the key it uses to sign possession proofs. Back it up
-alongside your data directory. Your `provider_id`, API key, payout
-address, capacity, and placement record live on the coordinator and
-survive the upgrade.
-
-New since provider-v1-1:
-
-- **Streaming ingest.** Uploads are written to disk as they arrive, with
-  an incremental Merkle computation, so memory stays flat regardless of
-  object size. A corrupt or mis-addressed upload is rejected at ingest.
-- **Signed possession proofs.** The provider signs its challenge
-  responses with its Ed25519 identity, so a proof is attributable to the
-  node that produced it.
-- **Security hardening.** The previously unauthenticated
-  `DELETE /objects/{merkle}` and `GET /list` endpoints have been removed.
-  Erase is now expressible only as a customer-signed
-  `POST /delete/{merkle}`.
-
-Full release notes and checksums:
-[latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest).
 
 ## What this is
 
@@ -131,6 +96,44 @@ at its source default, so the node reports an older version to the
 coordinator. Go 1.22+ required; the in-tree module path is
 `github.com/obsideo/obsideo-provider`, and you build from the cloned
 tree (not via `go install`).
+
+## Upgrading from an older release
+
+Upgrading is a binary swap. The on-disk object format is unchanged, so
+your existing `data/` directory carries over untouched.
+
+1. Stop your provider service.
+2. Back up your current binary (e.g. rename to `.pre-v1-5`).
+3. Download the new binary from the
+   [latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest)
+   and put it in place of the old one.
+4. Verify version: `./obsideo-provider version` should print
+   `provider-v1-5-streaming-signed`.
+5. Restart the service. Look for `heartbeat: first success` in the logs
+   within ~30 seconds.
+
+On first start the provider generates an Ed25519 signing identity at
+`{data_dir}/provider_identity.key` (mode 0600) if one does not already
+exist. This is the key it uses to sign possession proofs. Back it up
+alongside your data directory. Your `provider_id`, API key, payout
+address, capacity, and placement record live on the coordinator and
+survive the upgrade.
+
+New since provider-v1-1:
+
+- **Streaming ingest.** Uploads are written to disk as they arrive, with
+  an incremental Merkle computation, so memory stays flat regardless of
+  object size. A corrupt or mis-addressed upload is rejected at ingest.
+- **Signed possession proofs.** The provider signs its challenge
+  responses with its Ed25519 identity, so a proof is attributable to the
+  node that produced it.
+- **Security hardening.** The previously unauthenticated
+  `DELETE /objects/{merkle}` and `GET /list` endpoints have been removed.
+  Erase is now expressible only as a customer-signed
+  `POST /delete/{merkle}`.
+
+Full release notes and checksums:
+[latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest).
 
 ## Docker
 
