@@ -14,7 +14,8 @@ data:
 
 tokens:
   public_key_path: "coordinator_pub.pem"
-  # The coordinator's public key. The network operator gives you this file.
+  # The coordinator's public key. Fetch it from the coordinator directly:
+  #   curl -sS https://coordinator.obsideo.io/public-key > coordinator_pub.pem
   # It is a PEM block whose body is the raw 32-byte Ed25519 key. The provider
   # refuses to start without it.
 

@@ -29,7 +29,7 @@ build, configure, start, register with a coordinator, and verify the full storag
   - For local/dev: `http://127.0.0.1:3334` works
   - For production: a direct, publicly reachable HTTPS endpoint on port 443 (e.g. `https://storage.example.com`), with TLS terminated at the node or a reverse proxy in front of it. This is a hard requirement for a production node.
   - Relay tunnels (ngrok, Cloudflare Tunnel, Tailscale Funnel) are not supported for the data path. They throttle bulk transfer, so a tunneled node underperforms on placement and earnings. Use a routable public IP or a port-forward to 443, not a relay.
-- **The coordinator's public key** — a PEM file you copy from the coordinator operator
+- **The coordinator's public key** — fetched from the coordinator's `/public-key` endpoint (see [Coordinator public key](#coordinator-public-key)). It is public, not a credential.
 
 ---
 
@@ -85,17 +85,20 @@ tokens:
 
 ### Coordinator public key
 
-The provider verifies every upload and download token against the coordinator's Ed25519 public key. The coordinator operator must give you this file.
-
-If you are running the coordinator yourself:
+The provider verifies every upload and download token against the coordinator's Ed25519 public key. It is a public key, not a credential, so fetch it from the coordinator directly rather than accepting it as an attachment:
 
 ```bash
-# After the coordinator starts for the first time it writes its public key to disk.
-# Copy it to the provider working directory:
-cp /path/to/coordinator/data/coordinator.pub ./coordinator_pub.pem
+# Obsideo network coordinator:
+curl -sS https://coordinator.obsideo.io/public-key > coordinator_pub.pem
+
+# Verify: PEM header, and a body that decodes to exactly 32 bytes
+head -1 coordinator_pub.pem                                  # -----BEGIN PUBLIC KEY-----
+grep -v -- '-----' coordinator_pub.pem | base64 -d | wc -c   # 32
 ```
 
-The file must be a PEM block with type `PUBLIC KEY` containing the raw 32-byte Ed25519 key. If the file is missing or malformed the provider will refuse to start.
+The file must be a PEM block with type `PUBLIC KEY` whose body is the raw 32-byte Ed25519 key. It is not an SPKI wrapper, so `openssl pkey -pubin` will not read it, and you should not generate one with openssl (the provider rejects a 44-byte SPKI key). If the file is missing or malformed the provider will refuse to start.
+
+If you are running your own coordinator instead, it writes its public key to disk on first start; copy its `data/coordinator.pub` to `./coordinator_pub.pem`.
 
 ---
 
@@ -158,7 +161,7 @@ Registration is a two-step process: register (triggers a liveness check), then w
 ### Step 1 — Register
 
 ```bash
-# Replace <coordinator-url> with the coordinator's address.
+# Replace <coordinator-url> with the coordinator's address (Obsideo network: https://coordinator.obsideo.io).
 # Replace <your-provider-url> with the publicly reachable address of YOUR provider.
 # Replace <capacity> with your storage capacity in bytes (e.g. 107374182400 = 100 GiB).
 
@@ -330,8 +333,8 @@ The coordinator attempted `GET {address}/health` and got a non-200 response or a
 
 The upload or download token signature does not verify against `coordinator_pub.pem`.
 
-- Confirm `coordinator_pub.pem` was copied from the coordinator that issued the tokens (not a different coordinator instance)
-- If the coordinator was restarted with a new key, copy the new `coordinator.pub` and restart the provider
+- Confirm `coordinator_pub.pem` came from the coordinator that issued the tokens (not a different coordinator instance)
+- Re-fetch it (`curl -sS https://coordinator.obsideo.io/public-key > coordinator_pub.pem`) and restart the provider. If the coordinator was ever restarted with a new key, this picks it up.
 
 ### Challenge returns 400
 
