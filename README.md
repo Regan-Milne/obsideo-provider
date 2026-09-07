@@ -50,26 +50,30 @@ Key properties:
 
 ## Install — native Linux
 
+Four commands, about five minutes. You need a public DNS name with TLS on 443
+terminating at a reverse proxy that forwards to the node's local port (3334).
+Relays and tunnels are not supported on the data path. Full guide, including the
+manual equivalent of every step: [OPERATOR_SETUP.md](OPERATOR_SETUP.md).
+
 ```bash
-# Download the latest binary + checksums:
-# https://github.com/Regan-Milne/obsideo-provider/releases/latest
+# 1. get the release and verify it
+wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/obsideo-provider-linux-amd64      https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+chmod +x obsideo-provider-linux-amd64 && mv obsideo-provider-linux-amd64 obsideo-provider
 
-wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/obsideo-provider-linux-amd64
-wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS
-mv obsideo-provider-linux-amd64 obsideo-provider
-chmod +x obsideo-provider
+# 2. key, identity, config, reachability check, register
+./obsideo-provider init --address https://storage.example.com --capacity 10TB --data /srv/obsideo
 
-# Copy config.example.yaml from this repo and edit:
-#   provider_id:                    (from the admin who approved you)
-#   coordinator.provider_api_key:   (delivered per-operator)
-#   data.path:                      (absolute path to your storage dir)
-
+# 3. after approval: paste the API key into config.yaml, then
 ./obsideo-provider start --config config.yaml
 ```
 
-Expect the first-boot log to include `heartbeat: first success` within
-~30 seconds; coordinator's placement filter now sees you as live.
+`init` fetches the coordinator's public key, generates the node's signing
+identity, writes `config.yaml`, checks that the public address reaches this
+process, registers with the coordinator and writes the returned provider id
+into the config. It prints the id and what happens next. Expect the first-boot
+log to include `heartbeat: first success` within ~30 seconds once the API key
+is in place.
 
 ## Install — Windows
 
@@ -86,7 +90,7 @@ Expect the first-boot log to include `heartbeat: first success` within
 git clone https://github.com/Regan-Milne/obsideo-provider.git
 cd obsideo-provider
 ./build.sh                       # stamps the release version into the binary
-./obsideo-provider version       # should print provider-v1-5-streaming-signed
+./obsideo-provider version       # should print provider-v1-6-init
 ./obsideo-provider start --config config.yaml
 ```
 
@@ -108,7 +112,7 @@ your existing `data/` directory carries over untouched.
    [latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest)
    and put it in place of the old one.
 4. Verify version: `./obsideo-provider version` should print
-   `provider-v1-5-streaming-signed`.
+   `provider-v1-6-init`.
 5. Restart the service. Look for `heartbeat: first success` in the logs
    within ~30 seconds.
 

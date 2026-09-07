@@ -1,124 +1,62 @@
 # Operator Setup Guide
 
-This guide covers everything an operator needs to run an Obsideo storage provider:
-build, configure, start, register with a coordinator, and verify the full storage lifecycle.
+Run a storage node on the Obsideo network. The default path is four commands and about five
+minutes; everything else on this page is reference for when you want to do a step by hand.
 
 > **Alpha software.** See [Limitations](#limitations) before deploying.
 
----
+## The five-minute default
 
-## Table of contents
-
-1. [Prerequisites](#prerequisites)
-2. [Build](#build)
-3. [Configuration](#configuration)
-4. [Starting the provider](#starting-the-provider)
-5. [Health check](#health-check)
-6. [Registering with a coordinator](#registering-with-a-coordinator)
-7. [Verifying the full lifecycle](#verifying-the-full-lifecycle)
-8. [Production checklist](#production-checklist)
-9. [Troubleshooting](#troubleshooting)
-10. [Limitations](#limitations)
-
----
-
-## Prerequisites
-
-- **Go 1.22 or later** — only required to build; the binary has no runtime dependencies
-- **A reachable address** — the coordinator must be able to make outbound HTTP(S) requests to your provider at registration time and on every challenge cycle (every 4 hours)
-  - For local/dev: `http://127.0.0.1:3334` works
-  - For production: a direct, publicly reachable HTTPS endpoint on port 443 (e.g. `https://storage.example.com`), with TLS terminated at the node or a reverse proxy in front of it. This is a hard requirement for a production node.
-  - Relay tunnels (ngrok, Cloudflare Tunnel, Tailscale Funnel) are not supported for the data path. They throttle bulk transfer, so a tunneled node underperforms on placement and earnings. Use a routable public IP or a port-forward to 443, not a relay.
-- **The coordinator's public key** — fetched from the coordinator's `/public-key` endpoint (see [Coordinator public key](#coordinator-public-key)). It is public, not a credential.
-
----
-
-## Build
-
-Most operators should take the released binary rather than building:
+You need a Linux host (amd64), a public DNS name for it, and TLS on 443 terminating at a reverse
+proxy (Caddy, nginx) that forwards to the node's local port, 3334. No relays or tunnels on the data
+path (ngrok, Cloudflare Tunnel, Tailscale Funnel): they throttle bulk transfer and a tunnelled node
+underperforms on placement. Full list: [Requirements](#requirements).
 
 ```bash
-wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/obsideo-provider-linux-amd64
-wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS
-mv obsideo-provider-linux-amd64 obsideo-provider && chmod +x obsideo-provider
-./obsideo-provider version    # should print provider-v1-5-streaming-signed
-```
+# 1. get the release and verify it
+wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/obsideo-provider-linux-amd64 \
+     https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+chmod +x obsideo-provider-linux-amd64 && mv obsideo-provider-linux-amd64 obsideo-provider
+./obsideo-provider version            # provider-v1-6-init
 
-To build from source instead:
+# 2. key, identity, config, reachability check, register
+#    (your proxy must already forward https://storage.example.com -> 127.0.0.1:3334)
+./obsideo-provider init --address https://storage.example.com --capacity 10TB --data /srv/obsideo
 
-```bash
-git clone https://github.com/Regan-Milne/obsideo-provider.git
-cd obsideo-provider
-./build.sh                    # stamps the release version into the binary
-./obsideo-provider version    # should print provider-v1-5-streaming-signed
-```
-
-`build.sh` sets the version ldflag. A plain `go build` also works but
-leaves the version string at its source default, so the node reports an
-older version to the coordinator. Go 1.22+ required; the result is a
-single self-contained binary with no runtime dependencies.
-
----
-
-## Configuration
-
-```bash
-cp config.example.yaml config.yaml
-```
-
-Edit `config.yaml`:
-
-```yaml
-provider_id: "my-provider-1"   # Human-readable label. Not used for auth — pick anything.
-
-server:
-  host: "0.0.0.0"              # Listen on all interfaces. Use "127.0.0.1" for local-only.
-  port: 3334
-
-data:
-  path: "./data"               # Where objects are stored. Use an absolute path in production.
-
-tokens:
-  public_key_path: "coordinator_pub.pem"  # See "Coordinator public key" below.
-```
-
-### Coordinator public key
-
-The provider verifies every upload and download token against the coordinator's Ed25519 public key. It is a public key, not a credential, so fetch it from the coordinator directly rather than accepting it as an attachment:
-
-```bash
-# Obsideo network coordinator:
-curl -sS https://coordinator.obsideo.io/public-key > coordinator_pub.pem
-
-# Verify: PEM header, and a body that decodes to exactly 32 bytes
-head -1 coordinator_pub.pem                                  # -----BEGIN PUBLIC KEY-----
-grep -v -- '-----' coordinator_pub.pem | base64 -d | wc -c   # 32
-```
-
-The file must be a PEM block with type `PUBLIC KEY` whose body is the raw 32-byte Ed25519 key. It is not an SPKI wrapper, so `openssl pkey -pubin` will not read it, and you should not generate one with openssl (the provider rejects a 44-byte SPKI key). If the file is missing or malformed the provider will refuse to start.
-
-If you are running your own coordinator instead, it writes its public key to disk on first start; copy its `data/coordinator.pub` to `./coordinator_pub.pem`.
-
----
-
-## Starting the provider
-
-```bash
+# 3. after approval: paste the API key into config.yaml under coordinator.provider_api_key, then
 ./obsideo-provider start --config config.yaml
 ```
 
-Expected output:
+What `init` does, in order, and prints as it goes:
 
-```
-obsideo-provider listening on 0.0.0.0:3334
-```
+1. Fetches the coordinator's Ed25519 public key from `https://coordinator.obsideo.io/public-key`
+   and writes `coordinator_pub.pem`. It refuses anything that is not a raw 32-byte PEM body.
+2. Generates this node's signing identity in the data directory (`provider_identity.key`, mode 600).
+   The private key never leaves the box; every proof the node produces is attributable to it.
+3. Writes `config.yaml`.
+4. Serves a temporary `/health` on the configured port and fetches `https://storage.example.com/health`
+   through the public address, so a wrong DNS record, a missing certificate or a proxy pointed at the
+   wrong port is reported here with a fix, not as a bare 502 from the coordinator.
+5. Registers the node and writes the returned **provider id** into `config.yaml`. The heartbeat URL is
+   built from that id; a made-up label there means the node never goes live.
 
-The provider creates `data/objects/` and `data/index/` on first run. Both directories are created automatically; you do not need to create them.
+Then it prints what happens next:
 
-To run as a background service, use your OS service manager (systemd, launchd, etc.) or a process supervisor like `supervisord`.
+| When | What |
+|---|---|
+| now | Your registration is `pending`. Send the provider id to regan@obsideo.io or the Telegram group. Approval is manual today. |
+| on approval | Approval issues your provider API key. It is shown once on our side and comes to you out of band, through the channel your security policy prefers. |
+| start + ~5 min | The node heartbeats every 30 s. After 10 consecutive heartbeats it is eligible to receive objects. |
+| first cycle | Objects arrive as customers store data. Each is challenged on a continuous cycle of roughly four hours; you earn for every proof you pass, settled in USDC to `noble_wallet_address`. |
 
-**systemd example** (`/etc/systemd/system/obsideo-provider.service`):
+`init` is safe to re-run with `--force`: the identity is kept, and the coordinator matches a
+registration by (identity, address), so you get the same id back. Flags: `--port` (default 3334),
+`--coordinator`, `--config`, `--wallet noble1...`, `--skip-probe`, `--no-register`.
+
+### Run it as a service
+
+`/etc/systemd/system/obsideo-provider.service`:
 
 ```ini
 [Unit]
@@ -127,6 +65,7 @@ After=network.target
 
 [Service]
 Type=simple
+User=obsideo
 WorkingDirectory=/opt/obsideo-provider
 ExecStart=/opt/obsideo-provider/obsideo-provider start --config config.yaml
 Restart=on-failure
@@ -137,256 +76,142 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-systemctl enable obsideo-provider
-systemctl start obsideo-provider
+systemctl enable --now obsideo-provider
+curl -s http://localhost:3334/health      # {"status":"ok"}
+```
+
+The first-boot log includes `heartbeat: first success` within ~30 s once the API key is in place.
+
+---
+
+## Requirements
+
+| Need | Detail |
+|---|---|
+| Linux, amd64 | Any modern distribution. The release is one static Go binary, no runtime dependencies. A Windows build exists for testing. |
+| Direct HTTPS on 443 | A public DNS name resolving to your host, TLS at the node or at a reverse proxy forwarding to `127.0.0.1:3334`. Routable public IP or port-forward both fine. **No relays or tunnels on the data path.** |
+| Capacity | Disk you are willing to fill, declared at registration (`--capacity 10TB`, `8TiB`, or bytes). The node does not enforce the cap itself; monitor the data volume. |
+| Outbound HTTPS | Heartbeat every 30 s, coverage refresh daily. No inbound ports other than 443. |
+| A wallet, eventually | Payouts go to a Noble (Cosmos) USDC address, `noble1...`. Register without one and add it to the config later. |
+
+Reverse-proxy example (Caddy, automatic TLS):
+
+```
+storage.example.com {
+	reverse_proxy 127.0.0.1:3334
+}
 ```
 
 ---
 
-## Health check
+## Doing it by hand (reference)
+
+Each `init` step as a manual command, for operators who want to see every byte.
+
+**Build from source** (Go 1.22+):
 
 ```bash
-curl http://localhost:3334/health
-# → {"status":"ok"}
+git clone https://github.com/Regan-Milne/obsideo-provider.git && cd obsideo-provider
+./build.sh                    # stamps the release version; a plain `go build` reports an older version
+./obsideo-provider version
 ```
 
-This endpoint always returns 200 when the provider is running. The coordinator polls it at registration time to confirm reachability.
-
----
-
-## Registering with a coordinator
-
-Registration is a two-step process: register (triggers a liveness check), then wait for operator approval.
-
-### Step 1 — Register
+**Coordinator public key.** It is a public key, not a credential; fetch it yourself rather than accepting an attachment:
 
 ```bash
-# Replace <coordinator-url> with the coordinator's address (Obsideo network: https://coordinator.obsideo.io).
-# Replace <your-provider-url> with the publicly reachable address of YOUR provider.
-# Replace <capacity> with your storage capacity in bytes (e.g. 107374182400 = 100 GiB).
+curl -sS https://coordinator.obsideo.io/public-key > coordinator_pub.pem
+head -1 coordinator_pub.pem                                  # -----BEGIN PUBLIC KEY-----
+grep -v -- '-----' coordinator_pub.pem | base64 -d | wc -c   # 32
+```
 
-REG=$(curl -s -X POST <coordinator-url>/internal/providers/register \
+The body is the raw 32-byte Ed25519 key, not an SPKI wrapper, so `openssl pkey -pubin` will not read
+it and you should not generate one with openssl (a 44-byte SPKI key is rejected). If you run your own
+coordinator, copy its `data/coordinator.pub` instead.
+
+**Config.** `cp config.example.yaml config.yaml` and set `data.path`, `tokens.public_key_path`,
+`coordinator.url`. Leave `provider_id` empty until you have registered.
+
+**Register.** The node must be running and reachable at the address first; the coordinator fetches
+`{address}/health` before accepting:
+
+```bash
+curl -s -X POST https://coordinator.obsideo.io/internal/providers/register \
   -H "Content-Type: application/json" \
-  -d '{
-    "address":        "<your-provider-url>",
-    "connectivity":   "direct",
-    "public_key":     "unused-v1",
-    "capacity_bytes": 107374182400
-  }')
-
-echo "$REG"
+  -d '{"address":"https://storage.example.com","connectivity":"direct","public_key":"<your signing key hex, or unused-v1>","capacity_bytes":10000000000000}'
 # → {"id":"<uuid>","status":"pending",...}
 ```
 
-The coordinator performs a liveness check (`GET {address}/health`) before accepting the registration. Your provider must be running and reachable at the address you specify.
+Put the returned `id` in `config.yaml` as `provider_id`. Re-registering with the same `public_key`
+and `address` returns the same record.
 
-On success you receive a registration object with `"status":"pending"`. Save the `id`.
+**Approve.** A coordinator operator runs `POST /internal/providers/<id>/approve`; that mints your
+provider API key, shown exactly once, and sends it to you out of band. Put it under
+`coordinator.provider_api_key` and (re)start the node.
 
-### Step 2 — Approval
-
-A coordinator operator must approve your registration before your provider receives uploads:
-
-```bash
-# Coordinator operator runs:
-curl -s -X POST <coordinator-url>/internal/providers/<your-id>/approve
-# → {"id":"...","status":"active",...}
-```
-
-Once `status` is `active`, the coordinator will:
-- Route new uploads to your provider
-- Include your provider in challenge cycles (every 4 hours)
-- Replicate to your provider when another provider fails a challenge
-
-### Checking your status
-
-```bash
-curl -s <coordinator-url>/internal/providers/<your-id>
-```
-
-Key fields:
-
-| Field | Meaning |
-|-------|---------|
-| `status` | `pending` / `active` / `suspended` |
-| `score` | Vestigial field, retained in the schema but not actively updated by the current challenger. Check `last_heartbeat` and recent challenge pass history instead. |
-| `used_bytes` | Storage in use as tracked by the coordinator. |
-| `last_heartbeat` | Last time the coordinator confirmed your provider was alive. |
+**Status.** There is no operator-facing status endpoint yet; ask us, or watch the node log for
+`heartbeat: first success`. Our side sees `status`, `last_heartbeat` and the consecutive-heartbeat count.
 
 ---
 
-## Verifying the full lifecycle
+## Verifying a live node
 
-The quickest way to confirm your provider is working end-to-end is to run an upload + lifecycle check using the coordinator's dev upload tool.
-
-**Prerequisites:** you need an account API key (from the coordinator operator) and the upload tool binary from the coordinator repo.
-
-```bash
-# Build the upload tool (from coordinator repo):
-cd provider-tools/upload
-go build -o upload .
-
-# Run the full lifecycle check:
-./upload \
-  --file     /path/to/any/file \
-  --bucket   test-bucket \
-  --key      test-file.txt \
-  --api-key  <your-api-key> \
-  --coordinator <coordinator-url> \
-  --lifecycle-check
-```
-
-A passing run looks like:
-
-```
-[upload      ] [1/1] → <your-provider-id> (<your-provider-url>)
-[confirm     ] OK
-[download    ] PASS — N bytes match exactly
-[delete      ] coordinator mapping removed (204)
-[gc          ] provider <your-id> — merkle root no longer held by the provider
-[lifecycle   ] PASS — upload, download, delete, and GC all verified
-```
-
-If this passes, your provider is correctly storing, serving, responding to GC, and physically deleting files.
-
-### Manual challenge test
-
-After uploading a file, you can test the challenge endpoint directly:
+Once approved and heartbeating, the coordinator will place objects on your node as customers store
+data. You can confirm the challenge path yourself once you hold an object:
 
 ```bash
-# Get the merkle root from the upload output (the long hex string after "root=")
-MERKLE=<merkle-hex>
-
-curl -s -X POST http://localhost:3334/challenge \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"challenge_id\": \"manual-test-1\",
-    \"merkle\":       \"${MERKLE}\",
-    \"chunk_index\":  0,
-    \"nonce\":        \"aabbccddeeff\",
-    \"expires_at\":   9999999999
-  }"
-```
-
-Expected response:
-
-```json
-{
-  "challenge_id":      "manual-test-1",
-  "chunk_hash":        "<64-char hex>",
-  "total_chunk_count": 1
-}
+curl -s -X POST http://localhost:3334/challenge -H "Content-Type: application/json" \
+  -d '{"challenge_id":"manual-1","merkle":"<merkle-hex from data/index>","chunk_index":0,"nonce":"aabbccddeeff","expires_at":9999999999}'
+# → {"challenge_id":"manual-1","chunk_hash":"<64 hex>","total_chunk_count":N}
 ```
 
 ---
 
 ## Production checklist
 
-Before accepting real traffic:
+- [ ] Address is `https://` and the certificate is valid from the public internet
+- [ ] Data directory on a persistent volume, disk monitoring in place (the node does not enforce capacity)
+- [ ] Running as a non-root user under systemd with `Restart=on-failure`
+- [ ] `/challenge` and `/replicate` (the only unauthenticated coordinator-facing endpoints) restricted to the coordinator's source address; everything else stays reachable
+- [ ] `coordinator_pub.pem` decodes to 32 bytes
+- [ ] `noble_wallet_address` set before you expect a payout
 
-- [ ] Provider address is an HTTPS URL (not plain HTTP)
-- [ ] TLS terminates at or before the provider process (reverse proxy, load balancer, or direct TLS)
-- [ ] Data directory is on a persistent, backed-up volume
-- [ ] Provider is running as a non-root user
-- [ ] `/challenge` and `/replicate` (the only unauthenticated endpoints) are restricted to the coordinator's source address; the authenticated public endpoints stay reachable
-- [ ] `coordinator_pub.pem` matches the live coordinator's public key
-- [ ] Service restarts automatically on crash (systemd `Restart=on-failure` or equivalent)
-- [ ] Disk space monitoring in place — provider does not enforce capacity limits internally
-
-### Firewall note
-
-Only `/challenge` and `/replicate` are unauthenticated coordinator-facing endpoints. In production, firewall them to the coordinator's source address.
-
-Every other endpoint is authenticated or public and must stay reachable: `/upload/{merkle}` (and the chunked `/upload/{merkle}/chunk|finalize|status`), `/download/{merkle}`, `/client-challenge`, `POST /delete/{merkle}`, and `/health`. Uploads and downloads carry coordinator-issued tokens, delete carries the customer's Ed25519 signature, and `/client-challenge` carries a token bound to the object, so these do not rely on the firewall for their security.
-
-The earlier unauthenticated `DELETE /objects/{merkle}` and `GET /list` endpoints have been removed. They no longer exist to firewall.
+Every other endpoint is authenticated or public and must stay reachable: `/upload/{merkle}` (and the
+chunked `/upload/{merkle}/chunk|finalize|status`), `/download/{merkle}`, `/client-challenge`,
+`POST /delete/{merkle}` (customer-signed), and `/health`. The old unauthenticated `DELETE /objects/{merkle}`
+and `GET /list` endpoints no longer exist.
 
 ---
 
 ## Troubleshooting
 
-### Provider fails to start: "load coordinator public key"
-
-The file at `tokens.public_key_path` is missing or malformed.
-
-- Confirm the file exists: `ls coordinator_pub.pem`
-- Confirm it contains a PEM block: `head -1 coordinator_pub.pem` should print `-----BEGIN PUBLIC KEY-----`
-- Confirm the key body is exactly 32 bytes (the PEM body is the raw Ed25519 key, not an SPKI wrapper, so `openssl pkey -pubin` will NOT read it): `grep -v -- '-----' coordinator_pub.pem | base64 -d | wc -c` should print `32`
-
-If the coordinator writes the file automatically, make sure it has started at least once before copying.
-
-### Registration returns `connection refused` or `timeout`
-
-The coordinator cannot reach your provider at the address you specified.
-
-- Confirm the provider is running: `curl http://localhost:3334/health`
-- If your provider is local but you specified a public address, confirm port forwarding or your tunnel is active
-- If using a tunnel (ngrok, etc.), confirm the tunnel URL matches the address in your registration request
-- Check for firewall rules blocking inbound connections on port 3334
-
-### Registration returns `{"error":"liveness check failed"}`
-
-The coordinator attempted `GET {address}/health` and got a non-200 response or a connection error.
-
-- Same steps as above — confirm the address in your registration body is reachable from the coordinator machine, not just from localhost
-
-### Upload tokens are rejected (401)
-
-The upload or download token signature does not verify against `coordinator_pub.pem`.
-
-- Confirm `coordinator_pub.pem` came from the coordinator that issued the tokens (not a different coordinator instance)
-- Re-fetch it (`curl -sS https://coordinator.obsideo.io/public-key > coordinator_pub.pem`) and restart the provider. If the coordinator was ever restarted with a new key, this picks it up.
-
-### Challenge returns 400
-
-The challenge request body could not be parsed. Common causes:
-
-- `expires_at` type mismatch — the coordinator sends it as a Unix timestamp (int64). If you see `cannot unmarshal number into Go struct field ... of type string`, you have an older version of obsideo-provider. Pull the latest.
-- Malformed JSON in the request body — check coordinator logs for what it sent
-
-### Challenge returns 404
-
-The provider does not have the object. Possible causes:
-
-- The file was never uploaded to this provider (check the coordinator object record — does it list this provider?)
-- The data directory was wiped or the object was deleted before GC issued the delete instruction
-- Wrong `merkle` value in the challenge request
-
-### Challenges are failing
-
-The coordinator is issuing challenges that your provider isn't passing. Each
-failed challenge means no per-cycle credit for that placement.
-
-1. Check coordinator logs for `challenge error` entries — they include the merkle root and error message
-2. Manually test the challenge endpoint (see above) to confirm the provider responds correctly
-3. If the data directory was reset or moved, the provider has lost its stored objects — the coordinator's reconciliation flow will eventually replicate them elsewhere
-
-Earnings recover automatically once challenges start passing again; there is no separate score that decays and recovers. The current model is "prove it, get paid; don't, don't" per cycle.
-
-### `data/objects/` is growing but `data/index/` has gaps
-
-Object files without corresponding index files cannot be challenged. This should not happen under normal operation. If you see it:
-
-- Likely caused by an interrupted write (crash after object write, before index write)
-- Affected objects will fail challenges; the coordinator will eventually replicate them elsewhere
-- Safe to delete orphaned object files (without matching `.json` in `data/index/`) if disk space is a concern
+| Symptom | Cause and fix |
+|---|---|
+| `init failed: fetch coordinator public key` | No outbound HTTPS to `coordinator.obsideo.io`, or a proxy rewrote the response. `curl -sS https://coordinator.obsideo.io/public-key` should print a PEM block. |
+| `init failed: cannot listen on :3334` | Something already holds the port, usually a running provider. Stop it, or pass `--skip-probe` and register while it runs. |
+| `init failed: this node is not reachable at https://...` | DNS does not point at this host, TLS is not terminating on 443, or the proxy forwards to the wrong port. The message names which. |
+| `coordinator answered HTTP 502` | The coordinator's own probe of `{address}/health` failed from the internet. Same fixes as above; if `init`'s own check passed, look at a firewall that allows your IP but not others. |
+| `load coordinator public key: unexpected public key size 44` | An openssl-generated SPKI key. Re-fetch from `/public-key`. |
+| Node runs, never becomes eligible | `provider_id` in `config.yaml` is not the coordinator's id (the log shows heartbeat 404s), or `provider_api_key` is empty. Re-run `init --force` or paste the id. |
+| Upload tokens rejected (401) | `coordinator_pub.pem` is from a different coordinator or is stale. Re-fetch and restart. |
+| Challenges failing | Each failed challenge means no credit for that object that cycle; earnings resume when they pass. Check the coordinator-facing firewall rule and that `data/` was not moved or wiped. If the data directory was lost, the network re-replicates elsewhere. |
+| `data/objects/` has files with no matching `data/index/` entry | Interrupted write. Orphaned object files cannot be challenged; safe to delete if disk is tight. |
 
 ---
 
 ## Limitations
 
-This is **alpha software** running on a pre-production network.
+This is **alpha software** on a pre-production network.
 
 | Area | Current state |
-|------|---------------|
-| **Auth on internal endpoints** | `/challenge` and `/replicate` are unauthenticated; firewall them to the coordinator IP. The unauthenticated `/list` and `DELETE /objects/{merkle}` endpoints have been removed; erase is now the customer-signed `POST /delete/{merkle}`. |
-| **No TLS built in** | The provider serves plain HTTP. Use a reverse proxy (nginx, caddy) for HTTPS in production. |
-| **Single-node only** | No clustering, no shared storage between provider instances. One process per data directory. |
-| **No capacity enforcement** | The provider does not reject uploads when `capacity_bytes` is exceeded. The coordinator tracks used_bytes but does not enforce server-side. |
-| **Challenge window is fixed** | Coordinator challenges every 4 hours. No per-provider tuning. |
-| **Earnings track challenge pass history per cycle** | A failed challenge means no credit for that placement that cycle. There is no separate score field actively driving placement decisions. |
-| **Manual approval required** | All new providers require a coordinator operator to call `/internal/providers/{id}/approve`. |
-| **No address update** | If your provider's public address changes, you must re-register. |
-| **Chunk size discrepancy** | The platform spec defines 1 MiB chunks. The current coordinator and upload tool use 10,240 bytes in dev mode. The provider records whichever chunk size the client used, so challenges always work — but the discrepancy should be resolved before mainnet. |
-| **Replication unverified at scale** | The replicate flow has been unit-tested but not stress-tested with large files or slow networks. |
+|---|---|
+| **Manual approval** | Every new node waits for a coordinator operator to approve it and to deliver the API key out of band. |
+| **No operator status endpoint** | You cannot query your own registration state; ask us or read your node log. |
+| **Auth on internal endpoints** | `/challenge` and `/replicate` are unauthenticated; firewall them to the coordinator. Erase is the customer-signed `POST /delete/{merkle}`. |
+| **No TLS built in** | The node serves plain HTTP; terminate TLS in a reverse proxy. |
+| **Single node per data directory** | No clustering or shared storage between instances. |
+| **No capacity enforcement** | The node does not reject uploads past `capacity_bytes`; the coordinator tracks `used_bytes` but does not enforce it. |
+| **Fixed challenge cadence** | Roughly every 4 hours, no per-provider tuning. |
+| **No address update** | If your public address changes, re-run `init --force` (same identity, new address registers a new record). |
+| **Replication unverified at scale** | The replicate flow is unit-tested, not stress-tested with large files or slow links. |
 
-These are known and tracked. This release is suitable for local testing and single-operator pilots. It is not suitable for production storage of user data.
+These are known and tracked. Suitable for single-operator pilots; not for production storage of user data.

@@ -1,7 +1,8 @@
 # obsideo-provider configuration example.
 # Copy to config.yaml and edit before running.
 
-provider_id: "my-provider-1"   # human-readable label; not used for auth
+provider_id: ""               # the id the coordinator returned at registration (`obsideo-provider init` fills this in).
+                               # The heartbeat URL is built from it, so a made-up label here means the node never goes live.
 
 server:
   host: "0.0.0.0"              # bind address; put a reverse proxy in front to terminate TLS on 443
@@ -21,7 +22,7 @@ tokens:
 
 coordinator:
   url: "https://coordinator.obsideo.io"   # the coordinator you register with and heartbeat to
-  provider_api_key: ""                     # your per-operator API key (given to you by the network operator)
+  provider_api_key: ""                     # issued when Obsideo approves your registration; delivered out of band
 
 coverage:
   enabled: true                # daily "which of my objects are still paid-for?" refresh; keep true for a live node

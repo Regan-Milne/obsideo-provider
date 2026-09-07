@@ -63,7 +63,7 @@ func TestUpload_Streaming_ByteExactAndIndexed(t *testing.T) {
 }
 
 // TestUpload_Streaming_SmallFile is the common small-file path: a sub-1 MiB single
-// chunk. The most common real upload shape — must keep working unchanged.
+// chunk. The most common real upload shape; must keep working unchanged.
 func TestUpload_Streaming_SmallFile(t *testing.T) {
 	srv, priv := newTestServerWithVerifier(t)
 	payload := patternBytesAPI(1500) // ~1.5 KB image-thumbnail shape
