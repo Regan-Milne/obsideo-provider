@@ -9,6 +9,10 @@ server:
   port: 3334
   read_timeout: 30
   write_timeout: 300
+  # cors_enabled: true          # browser clients (the obsideo.io test page, customer web apps) may call
+  #                             # upload/download/client-challenge/delete/health directly. Default true.
+  # cors_allowed_origins: ["*"] # restrict to specific web origins if you want; every one of those routes
+  #                             # is already token- or signature-authenticated, so "*" adds no risk.
 
 data:
   path: "./data"               # objects/, index/, and provider_identity.key are created here on first run

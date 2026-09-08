@@ -63,6 +63,19 @@ type ServerConfig struct {
 	Port         int    `yaml:"port"`
 	ReadTimeout  int    `yaml:"read_timeout"`
 	WriteTimeout int    `yaml:"write_timeout"`
+	// CORSEnabled lets browser clients (the obsideo.io test page, customer
+	// web apps) call the customer-facing routes directly. Pointer so an
+	// omitted key means true; an explicit false restores pre-v1-7 behaviour.
+	CORSEnabled *bool `yaml:"cors_enabled,omitempty"`
+	// CORSAllowedOrigins restricts which web origins may call this node.
+	// Default ["*"]: every browser-facing route is already token- or
+	// signature-authenticated, so the origin adds no security here. See api/cors.go.
+	CORSAllowedOrigins []string `yaml:"cors_allowed_origins,omitempty"`
+}
+
+// CORSOn returns the effective cors_enabled value (default true).
+func (c *ServerConfig) CORSOn() bool {
+	return c.CORSEnabled == nil || *c.CORSEnabled
 }
 
 type DataConfig struct {

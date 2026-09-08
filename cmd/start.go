@@ -75,6 +75,12 @@ func Start(cfgPath, version string) error {
 
 	srv := api.New(st, v, pauseState, cfg.ProviderID, cfg.AcceptsUncontractedData())
 	srv.SetProofSigner(ident)
+	srv.SetCORS(cfg.Server.CORSOn(), cfg.Server.CORSAllowedOrigins)
+	if cfg.Server.CORSOn() {
+		log.Printf("browser access (CORS) enabled for upload/download/client-challenge/delete/health; origins=%v", cfg.Server.CORSAllowedOrigins)
+	} else {
+		log.Printf("browser access (CORS) disabled by config")
+	}
 
 	// Heartbeat loop: keep coord's LastHeartbeat fresh so placement
 	// filter doesn't reject us as stale. Only starts if both

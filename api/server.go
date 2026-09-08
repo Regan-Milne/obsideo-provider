@@ -31,6 +31,8 @@ type Server struct {
 	acceptUncontractedData bool            // operator policy: accept uploads from non-contracted accounts
 	signer                 ProofSigner     // nil = do not sign challenge responses (legacy/dev)
 	clientChallenges       *challengeRateLimiter
+	corsEnabled            bool
+	corsOrigins            []string
 }
 
 // SetProofSigner attaches a signing identity so challenge responses are signed.
@@ -58,12 +60,30 @@ func New(st *store.Store, v *tokens.Verifier, pause *pausectl.State, providerID 
 		providerID:             providerID,
 		acceptUncontractedData: acceptUncontractedData,
 		clientChallenges:       newChallengeRateLimiter(),
+		corsEnabled:            true,
+		corsOrigins:            []string{"*"},
 	}
+}
+
+// SetCORS configures browser access (see cors.go). Called from cmd/start
+// with server.cors_enabled / server.cors_allowed_origins. Defaults: enabled, "*".
+func (s *Server) SetCORS(enabled bool, origins []string) {
+	s.corsEnabled = enabled
+	if len(origins) == 0 {
+		origins = []string{"*"}
+	}
+	s.corsOrigins = origins
 }
 
 // Handler builds and returns the router.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
+
+	// Browser access (provider-v1-7): preflight + CORS headers on the
+	// customer-facing routes only. See cors.go for what and why.
+	if s.corsEnabled {
+		r.Use(corsMiddleware(s.corsOrigins))
+	}
 
 	// Coordinator-issued JWT required. Note there is no router-level
 	// middleware here: each handler below calls bearerToken + verifier.

@@ -18,7 +18,7 @@ wget https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/ob
      https://github.com/Regan-Milne/obsideo-provider/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 chmod +x obsideo-provider-linux-amd64 && mv obsideo-provider-linux-amd64 obsideo-provider
-./obsideo-provider version            # provider-v1-6-init
+./obsideo-provider version            # provider-v1-7-cors
 
 # 2. key, identity, config, reachability check, register
 #    (your proxy must already forward https://storage.example.com -> 127.0.0.1:3334)
@@ -131,6 +131,13 @@ coordinator, copy its `data/coordinator.pub` instead.
 **Config.** `cp config.example.yaml config.yaml` and set `data.path`, `tokens.public_key_path`,
 `coordinator.url`. Leave `provider_id` empty until you have registered.
 
+**Browser access (v1-7).** The node answers CORS preflight on the customer-facing routes
+(`/upload/*`, `/download/*`, `/delete/*`, `/client-challenge`, `/health`) so web apps and the
+obsideo.io test page can talk to it directly from a browser. Every one of those routes is already
+authenticated by a coordinator-issued token or the customer's signature, so the default origin
+list is `["*"]`. Restrict with `server.cors_allowed_origins`, or set `server.cors_enabled: false`
+to behave like v1-6. The coordinator-only routes never carry CORS headers.
+
 **Register.** The node must be running and reachable at the address first; the coordinator fetches
 `{address}/health` before accepting:
 
@@ -211,6 +218,7 @@ This is **alpha software** on a pre-production network.
 | **Single node per data directory** | No clustering or shared storage between instances. |
 | **No capacity enforcement** | The node does not reject uploads past `capacity_bytes`; the coordinator tracks `used_bytes` but does not enforce it. |
 | **Fixed challenge cadence** | Roughly every 4 hours, no per-provider tuning. |
+| **Browser CORS is on by default** | Customer-facing routes answer preflight for any origin (they are token-authenticated anyway). Restrict or disable in `server:` if your policy requires. |
 | **No address update** | If your public address changes, re-run `init --force` (same identity, new address registers a new record). |
 | **Replication unverified at scale** | The replicate flow is unit-tested, not stress-tested with large files or slow links. |
 

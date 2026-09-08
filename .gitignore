@@ -26,3 +26,4 @@ Thumbs.db
 # Go
 *.test
 *.out
+dist/

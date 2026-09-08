@@ -90,7 +90,7 @@ is in place.
 git clone https://github.com/Regan-Milne/obsideo-provider.git
 cd obsideo-provider
 ./build.sh                       # stamps the release version into the binary
-./obsideo-provider version       # should print provider-v1-6-init
+./obsideo-provider version       # should print provider-v1-7-cors
 ./obsideo-provider start --config config.yaml
 ```
 
@@ -112,7 +112,7 @@ your existing `data/` directory carries over untouched.
    [latest release](https://github.com/Regan-Milne/obsideo-provider/releases/latest)
    and put it in place of the old one.
 4. Verify version: `./obsideo-provider version` should print
-   `provider-v1-6-init`.
+   `provider-v1-7-cors`.
 5. Restart the service. Look for `heartbeat: first success` in the logs
    within ~30 seconds.
 
