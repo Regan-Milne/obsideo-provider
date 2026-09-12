@@ -20,8 +20,7 @@ const (
 	proofVersionCompact   = 4 // compact proofs: challenge is over a 4096-byte block within the chunk
 )
 
-// auditChallenge is the canonical request shape from the coord challenger.
-// Mirrors coordinator/proof/types.go::AuditChallenge.
+// auditChallenge is the request shape a challenger sends.
 type auditChallenge struct {
 	Version      int    `json:"version"`
 	ChallengeID  string `json:"challenge_id"`
@@ -34,10 +33,7 @@ type auditChallenge struct {
 	ProofVersion int    `json:"proof_version,omitempty"`
 }
 
-// auditResponse is the canonical response shape the coord verifier expects.
-// Mirrors coordinator/proof/types.go::AuditResponse. The verifier checks
-// challenge_id, nonce, merkle_root, chunk_index, chunk_data, merkle_proof.
-// The other fields are echoed for parity but not validated.
+// auditResponse is the response shape a verifier expects.
 type auditResponse struct {
 	Version         int         `json:"version"`
 	ChallengeID     string      `json:"challenge_id"`
@@ -55,8 +51,7 @@ type auditResponse struct {
 	// canonical proof payload (identity.ProofSigPayload). KeyID tags which
 	// provider key signed. Both omitempty: a provider with no signing
 	// identity emits neither field, and the response is byte-identical to
-	// the pre-signing wire format — the coord verifier ignores unknown
-	// fields, so mixed fleets interoperate. See note_signed_proofs_build_plan.
+	// pre-signing wire format, so mixed fleets interoperate.
 	Signature string `json:"signature,omitempty"`
 	KeyID     string `json:"key_id,omitempty"`
 }
@@ -126,9 +121,8 @@ func (s *Server) serveChallenge(w http.ResponseWriter, ch auditChallenge) {
 		return
 	}
 
-	// Read just the challenged chunk's bytes from disk. Coord's verifier
-	// recomputes chunkHashV1(idx, bytes) and compares to its stored hash;
-	// a partial read would silently produce a wrong hash.
+	// Read just the challenged chunk's bytes from disk; a partial read would
+	// silently produce a wrong hash.
 	f, err := s.store.OpenObject(ch.MerkleRoot)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -192,8 +186,7 @@ func (s *Server) serveChallenge(w http.ResponseWriter, ch auditChallenge) {
 		return
 	}
 
-	// Build merkle leaves from the precomputed chunk hashes. Each leaf is
-	// sha3-512(chunkHash) per the SDK + coord's wealdtech-compatible tree.
+	// Build merkle leaves from the precomputed chunk hashes.
 	leaves := make([][]byte, idx.TotalChunks)
 	for i, hexHash := range idx.ChunkHashes {
 		raw, err := hex.DecodeString(hexHash)
@@ -226,10 +219,8 @@ func (s *Server) serveChallenge(w http.ResponseWriter, ch auditChallenge) {
 // signAuditResponse attaches the provider's signature + key id to a challenge
 // response when a signer is configured. No-op when s.signer is nil, so
 // unsigned (legacy/dev) providers emit the pre-signing wire format unchanged.
-// The signature is over identity.ProofSigPayload of the RAW returned bytes
-// (chunk for V1, block for compact), binding the response to this exact
-// challenge, chunk/block, and data — a signature cannot be replayed for a
-// different challenge or tampered payload.
+// The signature binds the response to this exact challenge and the returned
+// bytes, so it cannot be replayed for a different challenge or tampered payload.
 func (s *Server) signAuditResponse(resp *auditResponse, rawBytes []byte, blockIndex int) {
 	if s.signer == nil {
 		return

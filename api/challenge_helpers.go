@@ -10,8 +10,7 @@ import (
 
 const hashLen = 64
 
-// chunkHashV1 matches coordinator/proof/verifier.go::chunkHashV1 and the
-// SDK's leaf formula: SHA-256(fmt.Sprintf("%d%x", index, raw_bytes)).
+// chunkHashV1 is the position-bound chunk hash used across the network.
 func chunkHashV1(index int, rawBytes []byte) []byte {
 	h := sha256.New()
 	fmt.Fprintf(h, "%d%x", index, rawBytes)
@@ -36,8 +35,7 @@ func nextPow2(n int) int {
 }
 
 // computeMerkleProof builds the sibling list from leaf to root for the given
-// leaf index. Zero-pads to next power of 2 to match the SDK's wealdtech-
-// compatible tree construction.
+// leaf index.
 func computeMerkleProof(leaves [][]byte, leafIndex int) []string {
 	if len(leaves) <= 1 {
 		return []string{}

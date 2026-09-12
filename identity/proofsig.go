@@ -13,30 +13,11 @@ import (
 // different scheme.
 const ProofSigDomain = "obsideo-proof-response-v1"
 
-// ProofSigPayload builds the canonical byte string a provider signs (and a
-// verifier reconstructs) for a challenge response. The signature binds the
-// response to the exact challenge and to the exact bytes returned, so a
-// signature cannot be replayed for a different challenge, a different chunk,
-// or tampered data.
-//
-// Layout — newline-delimited, in fixed order:
-//
-//	obsideo-proof-response-v1\n
-//	<provider_id>\n         (UUID; identifies WHICH provider — stops A's sig standing in for B)
-//	<challenge_id>\n        (UUID; binds to this specific challenge)
-//	<nonce>\n               (hex; the coord/client-chosen randomness)
-//	<merkle_root>\n         (hex; the object)
-//	<chunk_index>\n         (decimal; which chunk)
-//	<block_index>\n         (decimal; compact-proof sub-block, 0 for v1 raw)
-//	<proof_version>\n       (decimal)
-//	<sha256(chunk_data_bytes) hex>   (digest of the RAW bytes returned, pre-base64)
-//
-// Every field is a UUID, hex string, or decimal integer, none of which can
-// contain a newline, so newline-delimiting is unambiguous. The digest is over
-// the raw chunk/block bytes (NOT their base64 text) so encoding choices never
-// affect what is signed. This function is duplicated verbatim on the
-// coordinator side (separate Go module); proofsig_golden_test.go pins the
-// exact bytes so the two implementations cannot silently drift.
+// ProofSigPayload builds the canonical byte string a provider signs for a
+// challenge response. It binds the response to the exact challenge and to the
+// exact bytes returned, so a signature cannot be replayed for a different
+// challenge, a different chunk, or tampered data. The layout is fixed by the
+// implementation below; the domain constant is versioned on purpose.
 func ProofSigPayload(providerID, challengeID, nonce, merkleRoot string, chunkIndex, blockIndex, proofVersion int, chunkData []byte) []byte {
 	digest := sha256.Sum256(chunkData)
 	var b strings.Builder

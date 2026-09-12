@@ -7,8 +7,7 @@ import (
 	"time"
 )
 
-// Client-issued possession challenges ("sovereign verification", Level 2 of
-// the signed-proofs work — see vault note_public_verifiable_proofs).
+// Client-issued possession challenges.
 //
 // The customer's client challenges this provider directly and verifies the
 // response against the merkle root IT computed at upload, so the check needs

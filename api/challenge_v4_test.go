@@ -237,3 +237,12 @@ func TestHandleChallengeUnknownProofVersion(t *testing.T) {
 		}
 	}
 }
+
+// goldenChunk builds a deterministic chunk for the v4 tests.
+func goldenChunk(size int) []byte {
+	b := make([]byte, size)
+	for i := range b {
+		b[i] = byte((i*31 + 7) & 0xff)
+	}
+	return b
+}
