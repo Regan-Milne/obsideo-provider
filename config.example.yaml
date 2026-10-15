@@ -13,6 +13,8 @@ server:
   #                             # upload/download/client-challenge/delete/health directly. Default true.
   # cors_allowed_origins: ["*"] # restrict to specific web origins if you want; every one of those routes
   #                             # is already token- or signature-authenticated, so "*" adds no risk.
+  # require_challenge_auth: false # true = the coordinator's /challenge requests must carry a signed audit
+  #                               # token (unsigned ones get 401). Leave false until Obsideo says to flip it.
 
 data:
   path: "./data"               # objects/, index/, and provider_identity.key are created here on first run

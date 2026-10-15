@@ -14,7 +14,17 @@ import (
 // enumeration endpoint here.
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		// Rollout signal for coordinator-challenge auth: a box is ready for
+		// require_challenge_auth when unauthenticated stops growing.
+		"challenge_auth": map[string]any{
+			"mode":            s.challengeAuthMode(),
+			"authenticated":   s.challengeAuth.authenticated.Load(),
+			"unauthenticated": s.challengeAuth.legacy.Load(),
+			"rejected":        s.challengeAuth.rejected.Load(),
+		},
+	})
 }
 
 // newBytesReader wraps a byte slice in an io.Reader for use as an HTTP request body.

@@ -171,6 +171,10 @@ curl -s -X POST http://localhost:3334/challenge -H "Content-Type: application/js
 # → {"challenge_id":"manual-1","chunk_hash":"<64 hex>","total_chunk_count":N}
 ```
 
+This unsigned request is answered only while `server.require_challenge_auth` is false (the default
+during rollout). With it set to true, `/challenge` needs a coordinator-signed audit token and this
+returns 401, which is the intended result.
+
 ---
 
 ## Production checklist
@@ -178,7 +182,7 @@ curl -s -X POST http://localhost:3334/challenge -H "Content-Type: application/js
 - [ ] Address is `https://` and the certificate is valid from the public internet
 - [ ] Data directory on a persistent volume, disk monitoring in place (the node does not enforce capacity)
 - [ ] Running as a non-root user under systemd with `Restart=on-failure`
-- [ ] `/challenge` and `/replicate` (the only unauthenticated coordinator-facing endpoints) restricted to the coordinator's source address; everything else stays reachable
+- [ ] `server.require_challenge_auth: true` once Obsideo confirms the coordinator signs every challenge (check `challenge_auth` on `/health`)
 - [ ] `coordinator_pub.pem` decodes to 32 bytes
 - [ ] `noble_wallet_address` set before you expect a payout
 
@@ -200,7 +204,7 @@ and `GET /list` endpoints no longer exist.
 | `load coordinator public key: unexpected public key size 44` | An openssl-generated SPKI key. Re-fetch from `/public-key`. |
 | Node runs, never becomes eligible | `provider_id` in `config.yaml` is not the coordinator's id (the log shows heartbeat 404s), or `provider_api_key` is empty. Re-run `init --force` or paste the id. |
 | Upload tokens rejected (401) | `coordinator_pub.pem` is from a different coordinator or is stale. Re-fetch and restart. |
-| Challenges failing | Each failed challenge means no credit for that object that cycle; earnings resume when they pass. Check the coordinator-facing firewall rule and that `data/` was not moved or wiped. If the data directory was lost, the network re-replicates elsewhere. |
+| Challenges failing | Each failed challenge means no credit for that object that cycle; earnings resume when they pass. Check that `data/` was not moved or wiped, and that `coordinator_pub.pem` is current (a stale key makes `/challenge` answer 401 when `require_challenge_auth` is on). If the data directory was lost, the network re-replicates elsewhere. |
 | `data/objects/` has files with no matching `data/index/` entry | Interrupted write. Orphaned object files cannot be challenged; safe to delete if disk is tight. |
 
 ---
@@ -213,7 +217,7 @@ This is **alpha software** on a pre-production network.
 |---|---|
 | **Manual approval** | Every new node waits for a coordinator operator to approve it and to deliver the API key out of band. |
 | **No operator status endpoint** | You cannot query your own registration state; ask us or read your node log. |
-| **Auth on internal endpoints** | `/challenge` and `/replicate` are unauthenticated; firewall them to the coordinator. Erase is the customer-signed `POST /delete/{merkle}`. |
+| **Auth on coordinator endpoints** | `/challenge` takes a coordinator-signed audit token, required once `require_challenge_auth` is true. `/replicate` acts only on a coordinator upload token. Erase is the customer-signed `POST /delete/{merkle}`. |
 | **No TLS built in** | The node serves plain HTTP; terminate TLS in a reverse proxy. |
 | **Single node per data directory** | No clustering or shared storage between instances. |
 | **No capacity enforcement** | The node does not reject uploads past `capacity_bytes`; the coordinator tracks `used_bytes` but does not enforce it. |

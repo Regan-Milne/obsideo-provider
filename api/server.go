@@ -33,6 +33,8 @@ type Server struct {
 	clientChallenges       *challengeRateLimiter
 	corsEnabled            bool
 	corsOrigins            []string
+	requireChallengeAuth   bool // false = audit token optional on /challenge (rollout window); see challenge_auth.go
+	challengeAuth          challengeAuthStats
 }
 
 // SetProofSigner attaches a signing identity so challenge responses are signed.
@@ -115,8 +117,12 @@ func (s *Server) Handler() http.Handler {
 	// as /challenge so one verifier serves both audiences.
 	r.Post("/client-challenge", s.handleClientChallenge)
 
-	// Internal — called by coordinator; restrict at firewall in production.
+	// Coordinator audit challenge. Authenticated by a coordinator-signed
+	// "audit" token (optional during rollout, then required by config); see
+	// challenge_auth.go. Do not rely on firewalling: providers serve public
+	// HTTPS and this route returns object bytes.
 	r.Post("/challenge", s.handleChallenge)
+	// Internal — called by coordinator; restrict at firewall in production.
 	r.Post("/replicate", s.handleReplicate)
 
 	// DELIBERATELY ABSENT — do not re-add:

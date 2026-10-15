@@ -76,6 +76,12 @@ func Start(cfgPath, version string) error {
 	srv := api.New(st, v, pauseState, cfg.ProviderID, cfg.AcceptsUncontractedData())
 	srv.SetProofSigner(ident)
 	srv.SetCORS(cfg.Server.CORSOn(), cfg.Server.CORSAllowedOrigins)
+	srv.SetRequireChallengeAuth(cfg.Server.RequireChallengeAuth)
+	if cfg.Server.RequireChallengeAuth {
+		log.Printf("challenge auth: REQUIRED (unsigned /challenge requests get 401)")
+	} else {
+		log.Printf("challenge auth: optional (audit tokens verified when present; unsigned /challenge still answered)")
+	}
 	if cfg.Server.CORSOn() {
 		log.Printf("browser access (CORS) enabled for upload/download/client-challenge/delete/health; origins=%v", cfg.Server.CORSAllowedOrigins)
 	} else {

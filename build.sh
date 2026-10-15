@@ -12,7 +12,7 @@
 #   GOOS=linux GOARCH=amd64 ./build.sh obsideo-provider-linux-amd64
 set -euo pipefail
 
-VERSION="provider-v1-7-cors"
+VERSION="provider-v1-8-challenge-auth"
 OUT="${1:-obsideo-provider}"
 
 CGO_ENABLED=0 go build -trimpath \

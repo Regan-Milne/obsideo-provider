@@ -67,20 +67,30 @@ type merkleProof struct {
 // supported in this handler — coord falls back to V1 raw mode when no
 // ReplicaCommitment exists, and provider-clean does not register a
 // /replica-commitment endpoint, so V1 raw is the only path that fires.
+//
+// Authenticated by a coordinator-signed audit token; see challenge_auth.go.
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	var ch auditChallenge
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
+	// A challenge body is a few hundred bytes; cap it so the route cannot be
+	// used to make the provider buffer arbitrary input before auth is checked.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxChallengeBody)).Decode(&ch); err != nil {
 		writeError(w, http.StatusBadRequest, "decode body: "+err.Error())
+		return
+	}
+	if status, msg := s.authorizeChallenge(r, ch); status != 0 {
+		writeError(w, status, msg)
 		return
 	}
 	s.serveChallenge(w, ch)
 }
 
+const maxChallengeBody = 64 << 10
+
 // serveChallenge is the shared challenge core: validates the challenge,
 // reads the chunk, builds the proof (V1 raw or V4 compact), signs, responds.
-// Called by handleChallenge (coord path, unauthenticated — the coord
-// challenger sends no token; access control is network position) and
-// handleClientChallenge (customer path, token-authenticated + rate-limited).
+// Called by handleChallenge (coord path, audit-token-authenticated; see
+// challenge_auth.go) and handleClientChallenge (customer path,
+// token-authenticated + rate-limited). Callers authorize; this does not.
 func (s *Server) serveChallenge(w http.ResponseWriter, ch auditChallenge) {
 	if ch.ProviderID != "" && s.providerID != "" && ch.ProviderID != s.providerID {
 		writeError(w, http.StatusForbidden, "provider_id mismatch")

@@ -71,6 +71,13 @@ type ServerConfig struct {
 	// Default ["*"]: every browser-facing route is already token- or
 	// signature-authenticated, so the origin adds no security here. See api/cors.go.
 	CORSAllowedOrigins []string `yaml:"cors_allowed_origins,omitempty"`
+	// RequireChallengeAuth makes the coordinator's POST /challenge refuse any
+	// request without a valid coordinator-signed audit token (HTTP 401).
+	// Default false for the rollout window: tokens are verified when present
+	// and unsigned challenges are still answered. Flip to true once /health
+	// shows challenge_auth.unauthenticated no longer growing. See
+	// api/challenge_auth.go.
+	RequireChallengeAuth bool `yaml:"require_challenge_auth,omitempty"`
 }
 
 // CORSOn returns the effective cors_enabled value (default true).

@@ -202,7 +202,7 @@ See `config.example.yaml` for the minimum-viable config. Key fields:
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | None | `{"status":"ok"}` |
+| `GET` | `/health` | None | `{"status":"ok","challenge_auth":{...}}` (auth mode + counters) |
 | `POST` | `/upload/{merkle}` | Bearer (upload token) | Accept an encrypted object |
 | `POST` | `/upload/{merkle}/chunk` | Bearer (upload token) | Streaming chunk of a large upload |
 | `POST` | `/upload/{merkle}/finalize` | Bearer (upload token) | Close and verify a streamed upload |
@@ -212,14 +212,18 @@ See `config.example.yaml` for the minimum-viable config. Key fields:
 | `POST` | `/delete/{merkle}` | Customer Ed25519 signature | Customer-signed erase |
 | `POST` | `/control/pause` | Cold-key Ed25519 signature | Activate circuit breaker |
 | `GET` | `/control/pause` | None | Current circuit-breaker state |
-| `POST` | `/challenge` | None (coordinator-only) | Respond to a proof-of-storage challenge |
-| `POST` | `/replicate` | None (coordinator-only) | Pull-and-push replication from a source provider |
+| `POST` | `/challenge` | Bearer (coordinator audit token) | Respond to a proof-of-storage challenge |
+| `POST` | `/replicate` | Coordinator upload token (in body) | Pull-and-push replication from a source provider |
 
-Only `/challenge` and `/replicate` are unauthenticated: the coordinator
-is the only party that should reach them, so restrict them to the
-coordinator's source address at your firewall in production. Every other
+`/challenge` takes a coordinator-signed `audit` token bound to one object
+and one provider. During the rollout window the token is verified when
+present and unsigned challenges are still answered; set
+`server.require_challenge_auth: true` to refuse unsigned ones (HTTP 401).
+`/health` reports `challenge_auth.unauthenticated`, which stops growing
+once the coordinator signs every challenge it sends. `/replicate` acts
+only on a coordinator upload token carried in the request body. Every
 endpoint is either authenticated (a coordinator-issued token or a
-customer signature) or is `/health`, and must stay publicly reachable.
+customer signature) or is `/health` / `GET /control/pause`.
 
 The unauthenticated `DELETE /objects/{merkle}` and `GET /list` endpoints
 that earlier releases exposed have been removed. Together they were a

@@ -20,8 +20,8 @@ import (
 // merkle root. A "challenge" token is the purpose-built type; a "download"
 // token is also accepted because it is a strictly stronger capability for
 // the same object (a holder could fetch every byte and self-verify anyway).
-// The pre-existing UNAUTHENTICATED /challenge route is unchanged — the coord
-// challenger sends no token, and mixed-fleet rollout must not break it.
+// The coordinator's own /challenge route takes a separate "audit" token type
+// (challenge_auth.go); neither route accepts the other's tokens.
 //
 // Rate limiting: a fixed-window per (account, merkle) counter. A challenge
 // reads one chunk (~1 MiB) from disk; without a cap the route would be a
